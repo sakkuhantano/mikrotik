@@ -22,11 +22,13 @@
 :global slayerV3Running
 :global slayerV3MacRotateCount
 :global slayerV3PrivateCount
+:global slayerV3PrivateCooldown
 :global slayerV3LastPublicIP
 
 :if ([:typeof $slayerV3Running] = "nothing") do={ :set slayerV3Running false }
 :if ([:typeof $slayerV3MacRotateCount] = "nothing") do={ :set slayerV3MacRotateCount 0 }
 :if ([:typeof $slayerV3PrivateCount] = "nothing") do={ :set slayerV3PrivateCount 0 }
+:if ([:typeof $slayerV3PrivateCooldown] = "nothing") do={ :set slayerV3PrivateCooldown 0 }
 :if ([:typeof $slayerV3LastPublicIP] = "nothing") do={ :set slayerV3LastPublicIP "" }
 
 # =================================================
@@ -225,6 +227,7 @@
             # -------------------------------------------------
             :if ($state = "PUBLIC") do={
                 :set slayerV3PrivateCount 0
+                :set slayerV3PrivateCooldown 0
 
                 :if ($currentIP != $slayerV3LastPublicIP) do={
                     :log warning ("SLAYER V3: Public IP changed -> " . $currentIP)
@@ -239,6 +242,7 @@
                 # -------------------------------------------------
                 :if ($state = "DEAD") do={
                     :set slayerV3PrivateCount 0
+                    :set slayerV3PrivateCooldown 0
                     :log warning "SLAYER V3: PPPoE DEAD/no IP; starting bounded recovery."
 
                     :local recovered false
@@ -249,6 +253,7 @@
                         :if ($result = "PUBLIC") do={
                             :set recovered true
                             :set slayerV3PrivateCount 0
+                            :set slayerV3PrivateCooldown 0
                             :local newIP [$getIP $pppoeName]
                             :if ($newIP != $slayerV3LastPublicIP) do={
                                 /system script run update_ddns
@@ -259,7 +264,8 @@
 
                         :if ($result = "PRIVATE") do={
                             :log warning "SLAYER V3: PPPoE recovered with private IP; keep internet connection."
-                            :set slayerV3PrivateCount 1
+                            :set slayerV3PrivateCount 3
+                            :set slayerV3PrivateCooldown 0
                             :set recovered true
                             :break
                         }
@@ -281,7 +287,8 @@
                         } else={
                             :if ($result = "PRIVATE") do={
                                 :log warning "SLAYER V3: MAC rotation restored internet with private IP; leave connection running."
-                                :set slayerV3PrivateCount 1
+                                :set slayerV3PrivateCount 3
+                                :set slayerV3PrivateCooldown 0
                             } else={
                                 :log error "SLAYER V3: Recovery still failed after MAC rotation; stop until next scheduler tick."
                             }
@@ -293,8 +300,23 @@
                     # PRIVATE/CGNAT: one retry per scheduler run.
                     # After 3 consecutive private-IP runs, rotate MAC.
                     # -------------------------------------------------
-                    :set slayerV3PrivateCount ($slayerV3PrivateCount + 1)
-                    :log warning ("SLAYER V3: Private/CGNAT IP " . $currentIP . " | run " . $slayerV3PrivateCount . "/3")
+                    # After a failed MAC rotation, do not disrupt a working
+                    # private-IP connection every minute. Retry window: 10 minutes.
+                    :if ($slayerV3PrivateCount >= 3) do={
+                        :set slayerV3PrivateCooldown ($slayerV3PrivateCooldown + 1)
+                        :if ($slayerV3PrivateCooldown < 10) do={
+                            :log warning ("SLAYER V3: Private IP retained; cooldown " . $slayerV3PrivateCooldown . "/10 scheduler ticks.")
+                        } else={
+                            :set slayerV3PrivateCooldown 0
+                            :set slayerV3PrivateCount 0
+                            :log warning "SLAYER V3: Private-IP retry window reopened after cooldown."
+                        }
+                    }
+
+                    :if ($slayerV3PrivateCount < 3) do={
+                        :set slayerV3PrivateCount ($slayerV3PrivateCount + 1)
+                        :log warning ("SLAYER V3: Private/CGNAT IP " . $currentIP . " | run " . $slayerV3PrivateCount . "/3")
+                    }
 
                     :if ($slayerV3PrivateCount >= 3) do={
                         :log warning "SLAYER V3: Private IP persisted for 3 runs; rotate MAC now."
@@ -310,7 +332,8 @@
                         } else={
                             :if ($result = "PRIVATE") do={
                                 :log warning "SLAYER V3: MAC rotation still gives private IP; keep connection running."
-                                :set slayerV3PrivateCount 0
+                                :set slayerV3PrivateCount 3
+                                :set slayerV3PrivateCooldown 0
                             } else={
                                 :log error "SLAYER V3: MAC rotation caused/left PPPoE dead; stop until next scheduler tick."
                                 :set slayerV3PrivateCount 0
