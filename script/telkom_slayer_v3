@@ -250,7 +250,6 @@
 
                     :local gotPublic false
                     :local recoveryBusy false
-                    :local privateRecovered false
                     :for attempt from=1 to=3 do={
                         :log warning ("SLAYER V3: Dead/private recovery retry " . $attempt . "/3")
                         :local result [$reconnect $pppoeName]
@@ -268,7 +267,6 @@
                         }
 
                         :if ($result = "PRIVATE") do={
-                            :set privateRecovered true
                             :log warning "SLAYER V3: Private IP obtained; continue retrying to seek public IP."
                         }
 
