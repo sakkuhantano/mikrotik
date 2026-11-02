@@ -246,6 +246,7 @@
                     :log warning "SLAYER V3: PPPoE DEAD/no IP; starting bounded recovery."
 
                     :local recovered false
+                    :local recoveryBusy false
                     :for attempt from=1 to=3 do={
                         :log warning ("SLAYER V3: Dead PPPoE retry " . $attempt . "/3")
                         :local result [$reconnect $pppoeName]
@@ -270,15 +271,19 @@
                             :break
                         }
 
-                        :if ($result = "BUSY") do={ :break }
+                        :if ($result = "BUSY") do={
+                            :set recoveryBusy true
+                            :break
+                        }
                     }
 
-                    :if ($recovered = false) do={
+                    :if (($recovered = false) && ($recoveryBusy = false)) do={
                         :log warning "SLAYER V3: Three dead retries failed; rotating MAC in the same execution."
                         :local result [$rotateMAC $wanIf $pppoeName $macPrefix]
 
                         :if ($result = "PUBLIC") do={
                             :set slayerV3PrivateCount 0
+                            :set slayerV3PrivateCooldown 0
                             :local newIP [$getIP $pppoeName]
                             :if ($newIP != $slayerV3LastPublicIP) do={
                                 /system script run update_ddns
