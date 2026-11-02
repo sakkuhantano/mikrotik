@@ -1,7 +1,7 @@
 # =================================================
 # TELKOM SLAYER V3
 # RouterOS 7
-# Revision: aggressive public-IP retry loop (3 retries, then MAC rotation)
+# Revision: fast reconnect timing (3 retries, then MAC rotation)
 # Scheduler: every 1 minute
 #
 # Policy:
@@ -107,16 +107,16 @@
         /interface pppoe-client disable $pids
 
         :local isDown false
-        :for n from=1 to=10 do={
+        :for n from=1 to=3 do={
             :if ([/interface pppoe-client get [:pick $pids 0] running] = false) do={
                 :set isDown true
                 :break
             }
-            :delay 1s
+            :delay 300ms
         }
 
         :if ($isDown = false) do={
-            :log error "SLAYER V3: PPPoE did not go down within 10 seconds; abort reconnect."
+            :log error "SLAYER V3: PPPoE did not go down within about 1 second; abort reconnect."
             /interface pppoe-client enable $pids
             :return "BUSY"
         }
@@ -124,17 +124,17 @@
         /ip arp remove [find interface=$wanIf]
         /interface pppoe-client enable $pids
 
-        :for n from=1 to=30 do={
+        :for n from=1 to=50 do={
             :local ip [$getIP $ppp]
             :if ([:len $ip] > 0) do={
                 :local state [$classifyIP $ip]
                 :log warning ("SLAYER V3: PPPoE connected; IP " . $ip . " => " . $state)
                 :return $state
             }
-            :delay 1s
+            :delay 300ms
         }
 
-        :log warning "SLAYER V3: No PPPoE IP after 30 seconds."
+        :log warning "SLAYER V3: No PPPoE IP after about 15 seconds."
         :return "DEAD"
     }
 
@@ -162,15 +162,15 @@
         # Disconnect PPPoE before changing the physical interface MAC.
         /interface pppoe-client disable $pids
         :local isDown false
-        :for n from=1 to=10 do={
+        :for n from=1 to=3 do={
             :if ([/interface pppoe-client get [:pick $pids 0] running] = false) do={
                 :set isDown true
                 :break
             }
-            :delay 1s
+            :delay 300ms
         }
         :if ($isDown = false) do={
-            :log error "SLAYER V3: Cannot rotate MAC because PPPoE did not go down."
+            :log error "SLAYER V3: Cannot rotate MAC because PPPoE did not go down within about 1 second."
             /interface pppoe-client enable $pids
             :return "BUSY"
         }
@@ -193,17 +193,17 @@
         /ip arp remove [find interface=$iface]
         /interface pppoe-client enable $pids
 
-        :for n from=1 to=30 do={
+        :for n from=1 to=50 do={
             :local ip [$getIP $ppp]
             :if ([:len $ip] > 0) do={
                 :local state [$classifyIP $ip]
                 :log warning ("SLAYER V3: After MAC change, IP " . $ip . " => " . $state)
                 :return $state
             }
-            :delay 1s
+            :delay 300ms
         }
 
-        :log warning "SLAYER V3: No PPPoE IP after MAC rotation."
+        :log warning "SLAYER V3: No PPPoE IP after MAC rotation in about 15 seconds."
         :return "DEAD"
     }
 
