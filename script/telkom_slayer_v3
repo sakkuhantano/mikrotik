@@ -1,14 +1,17 @@
 # =================================================
 # TELKOM SLAYER V3
 # RouterOS 7
+# Revision: aggressive public-IP retry loop (3 retries, then MAC rotation)
 # Scheduler: every 1 minute
 #
 # Policy:
 # - Public IP: keep connection; update DDNS only when IP changes.
-# - Private/CGNAT IP: one controlled reconnect per run.
-#   After 3 consecutive private-IP runs, rotate MAC once.
-# - Dead PPPoE/no IP: up to 3 reconnect attempts in this run,
-#   then rotate MAC immediately and verify one final attempt.
+# - Private/CGNAT IP: up to 3 immediate reconnect attempts per run.
+#   If still not public, rotate MAC in the same execution.
+#   If MAC rotation still returns private IP, preserve it for 10 minutes.
+# - Dead PPPoE/no IP: up to 3 reconnect attempts in this run.
+#   A private IP does not stop the retry loop; rotate MAC after 3 attempts
+#   unless a public IP is obtained or PPPoE reports BUSY.
 # - One execution at a time; overlapping scheduler runs are skipped.
 # =================================================
 
@@ -245,14 +248,15 @@
                     :set slayerV3PrivateCooldown 0
                     :log warning "SLAYER V3: PPPoE DEAD/no IP; starting bounded recovery."
 
-                    :local recovered false
+                    :local gotPublic false
                     :local recoveryBusy false
+                    :local privateRecovered false
                     :for attempt from=1 to=3 do={
-                        :log warning ("SLAYER V3: Dead PPPoE retry " . $attempt . "/3")
+                        :log warning ("SLAYER V3: Dead/private recovery retry " . $attempt . "/3")
                         :local result [$reconnect $pppoeName]
 
                         :if ($result = "PUBLIC") do={
-                            :set recovered true
+                            :set gotPublic true
                             :set slayerV3PrivateCount 0
                             :set slayerV3PrivateCooldown 0
                             :local newIP [$getIP $pppoeName]
@@ -264,11 +268,8 @@
                         }
 
                         :if ($result = "PRIVATE") do={
-                            :log warning "SLAYER V3: PPPoE recovered with private IP; keep internet connection."
-                            :set slayerV3PrivateCount 3
-                            :set slayerV3PrivateCooldown 0
-                            :set recovered true
-                            :break
+                            :set privateRecovered true
+                            :log warning "SLAYER V3: Private IP obtained; continue retrying to seek public IP."
                         }
 
                         :if ($result = "BUSY") do={
@@ -277,8 +278,8 @@
                         }
                     }
 
-                    :if (($recovered = false) && ($recoveryBusy = false)) do={
-                        :log warning "SLAYER V3: Three dead retries failed; rotating MAC in the same execution."
+                    :if (($gotPublic = false) && ($recoveryBusy = false)) do={
+                        :log warning "SLAYER V3: Three reconnect attempts completed without public IP; rotating MAC now."
                         :local result [$rotateMAC $wanIf $pppoeName $macPrefix]
 
                         :if ($result = "PUBLIC") do={
@@ -291,7 +292,7 @@
                             }
                         } else={
                             :if ($result = "PRIVATE") do={
-                                :log warning "SLAYER V3: MAC rotation restored internet with private IP; leave connection running."
+                                :log warning "SLAYER V3: MAC rotation returned private IP; preserve connection and enter 10-minute cooldown."
                                 :set slayerV3PrivateCount 3
                                 :set slayerV3PrivateCooldown 0
                             } else={
@@ -302,11 +303,10 @@
                 } else={
 
                     # -------------------------------------------------
-                    # PRIVATE/CGNAT: one retry per scheduler run.
-                    # After 3 consecutive private-IP runs, rotate MAC.
+                    # PRIVATE/CGNAT: 3 immediate retries, then MAC rotate.
+                    # After MAC rotation still private, preserve connection
+                    # and wait 10 scheduler ticks (10 minutes).
                     # -------------------------------------------------
-                    # After a failed MAC rotation, keep the working connection
-                    # and reopen a retry window only every 10 scheduler ticks.
                     :local inCooldown false
                     :if ($slayerV3PrivateCount >= 3) do={
                         :set slayerV3PrivateCooldown ($slayerV3PrivateCooldown + 1)
@@ -321,11 +321,36 @@
                     }
 
                     :if ($inCooldown = false) do={
-                        :set slayerV3PrivateCount ($slayerV3PrivateCount + 1)
-                        :log warning ("SLAYER V3: Private/CGNAT IP " . $currentIP . " | run " . $slayerV3PrivateCount . "/3")
+                        :local gotPublic false
+                        :local recoveryBusy false
+                        :for attempt from=1 to=3 do={
+                            :log warning ("SLAYER V3: Private-IP reconnect attempt " . $attempt . "/3 | current IP " . $currentIP)
+                            :local result [$reconnect $pppoeName]
 
-                        :if ($slayerV3PrivateCount >= 3) do={
-                            :log warning "SLAYER V3: Private IP persisted for 3 runs; rotate MAC now."
+                            :if ($result = "PUBLIC") do={
+                                :set gotPublic true
+                                :set slayerV3PrivateCount 0
+                                :set slayerV3PrivateCooldown 0
+                                :local newIP [$getIP $pppoeName]
+                                :if ($newIP != $slayerV3LastPublicIP) do={
+                                    /system script run update_ddns
+                                    :set slayerV3LastPublicIP $newIP
+                                }
+                                :break
+                            }
+
+                            :if ($result = "PRIVATE") do={
+                                :log warning "SLAYER V3: Still private, but connection is available; continue next retry in this execution."
+                            }
+
+                            :if ($result = "BUSY") do={
+                                :set recoveryBusy true
+                                :break
+                            }
+                        }
+
+                        :if (($gotPublic = false) && ($recoveryBusy = false)) do={
+                            :log warning "SLAYER V3: Three reconnect attempts did not obtain public IP; rotate MAC now."
                             :local result [$rotateMAC $wanIf $pppoeName $macPrefix]
 
                             :if ($result = "PUBLIC") do={
@@ -338,32 +363,13 @@
                                 }
                             } else={
                                 :if ($result = "PRIVATE") do={
-                                    :log warning "SLAYER V3: MAC rotation still gives private IP; keep connection running and enter cooldown."
+                                    :log warning "SLAYER V3: MAC rotation still gives private IP; keep connection and enter 10-minute cooldown."
                                     :set slayerV3PrivateCount 3
                                     :set slayerV3PrivateCooldown 0
                                 } else={
-                                    :log error "SLAYER V3: MAC rotation caused/left PPPoE dead; stop until next scheduler tick."
+                                    :log error "SLAYER V3: MAC rotation left PPPoE dead; stop until next scheduler tick."
                                     :set slayerV3PrivateCount 0
                                     :set slayerV3PrivateCooldown 0
-                                }
-                            }
-                        } else={
-                            :log warning "SLAYER V3: Try one controlled reconnect; if still private, leave it running."
-                            :local result [$reconnect $pppoeName]
-
-                            :if ($result = "PUBLIC") do={
-                                :set slayerV3PrivateCount 0
-                                :set slayerV3PrivateCooldown 0
-                                :local newIP [$getIP $pppoeName]
-                                :if ($newIP != $slayerV3LastPublicIP) do={
-                                    /system script run update_ddns
-                                    :set slayerV3LastPublicIP $newIP
-                                }
-                            } else={
-                                :if ($result = "PRIVATE") do={
-                                    :log warning "SLAYER V3: Still private; internet remains connected. No more retries this run."
-                                } else={
-                                    :log warning "SLAYER V3: PPPoE became dead during private-IP retry; dead recovery will run next scheduler tick."
                                 }
                             }
                         }
