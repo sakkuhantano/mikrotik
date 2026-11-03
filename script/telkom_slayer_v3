@@ -108,11 +108,13 @@
 
         :local isDown false
         :for n from=1 to=3 do={
-            :if ([/interface pppoe-client get [:pick $pids 0] running] = false) do={
-                :set isDown true
-                :break
+            :if ($isDown = false) do={
+                :if ([/interface pppoe-client get [:pick $pids 0] running] = false) do={
+                    :set isDown true
+                } else={
+                    :delay 300ms
+                }
             }
-            :delay 300ms
         }
 
         :if ($isDown = false) do={
@@ -163,11 +165,13 @@
         /interface pppoe-client disable $pids
         :local isDown false
         :for n from=1 to=3 do={
-            :if ([/interface pppoe-client get [:pick $pids 0] running] = false) do={
-                :set isDown true
-                :break
+            :if ($isDown = false) do={
+                :if ([/interface pppoe-client get [:pick $pids 0] running] = false) do={
+                    :set isDown true
+                } else={
+                    :delay 300ms
+                }
             }
-            :delay 300ms
         }
         :if ($isDown = false) do={
             :log error "SLAYER V3: Cannot rotate MAC because PPPoE did not go down within about 1 second."
@@ -251,6 +255,7 @@
                     :local gotPublic false
                     :local recoveryBusy false
                     :for attempt from=1 to=3 do={
+                        :if (($gotPublic = false) && ($recoveryBusy = false)) do={
                         :log warning ("SLAYER V3: Dead/private recovery retry " . $attempt . "/3")
                         :local result [$reconnect $pppoeName]
 
@@ -263,7 +268,7 @@
                                 /system script run update_ddns
                                 :set slayerV3LastPublicIP $newIP
                             }
-                            :break
+
                         }
 
                         :if ($result = "PRIVATE") do={
@@ -272,7 +277,9 @@
 
                         :if ($result = "BUSY") do={
                             :set recoveryBusy true
-                            :break
+
+                        }
+                    
                         }
                     }
 
@@ -322,6 +329,7 @@
                         :local gotPublic false
                         :local recoveryBusy false
                         :for attempt from=1 to=3 do={
+                        :if (($gotPublic = false) && ($recoveryBusy = false)) do={
                             :log warning ("SLAYER V3: Private-IP reconnect attempt " . $attempt . "/3 | current IP " . $currentIP)
                             :local result [$reconnect $pppoeName]
 
@@ -334,7 +342,7 @@
                                     /system script run update_ddns
                                     :set slayerV3LastPublicIP $newIP
                                 }
-                                :break
+
                             }
 
                             :if ($result = "PRIVATE") do={
@@ -343,9 +351,11 @@
 
                             :if ($result = "BUSY") do={
                                 :set recoveryBusy true
-                                :break
+
                             }
+                        
                         }
+                    }
 
                         :if (($gotPublic = false) && ($recoveryBusy = false)) do={
                             :log warning "SLAYER V3: Three reconnect attempts did not obtain public IP; rotate MAC now."
