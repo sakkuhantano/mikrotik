@@ -123,7 +123,10 @@
             :return "BUSY"
         }
 
-        /ip arp remove [find interface=$wanIf]
+        :local arpEntries [/ip arp find interface=$wanIf]
+        :if ([:len $arpEntries] > 0) do={
+            /ip arp remove $arpEntries
+        }
         /interface pppoe-client enable $pids
 
         :for n from=1 to=50 do={
@@ -194,7 +197,10 @@
             :set slayerV3MacRotateCount 0
         }
 
-        /ip arp remove [find interface=$iface]
+        :local arpEntries [/ip arp find interface=$iface]
+        :if ([:len $arpEntries] > 0) do={
+            /ip arp remove $arpEntries
+        }
         /interface pppoe-client enable $pids
 
         :for n from=1 to=50 do={
