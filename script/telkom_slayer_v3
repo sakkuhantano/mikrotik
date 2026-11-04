@@ -16,13 +16,14 @@
 
 :local pppoeName "Telkom"
 :local wanIf "ether1"
-:local macPrefix "BC:C0:0F"
+:local macPrefix "02"
 
 # =================================================
 # GLOBAL STATE
 # =================================================
 :global slayerV3Running
 :global slayerV3MacRotateCount
+:global slayerV3LastRandomMAC
 :global slayerV3ReconnectFailures
 :global slayerV3NoIPFailures
 :global slayerV3PrivateTicks
@@ -32,6 +33,7 @@
 
 :if ([:typeof $slayerV3Running] = "nothing") do={ :set slayerV3Running false }
 :if ([:typeof $slayerV3MacRotateCount] = "nothing") do={ :set slayerV3MacRotateCount 0 }
+:if ([:typeof $slayerV3LastRandomMAC] = "nothing") do={ :set slayerV3LastRandomMAC "" }
 :if ([:typeof $slayerV3ReconnectFailures] = "nothing") do={ :set slayerV3ReconnectFailures 0 }
 :if ([:typeof $slayerV3NoIPFailures] = "nothing") do={ :set slayerV3NoIPFailures 0 }
 :if ([:typeof $slayerV3PrivateTicks] = "nothing") do={ :set slayerV3PrivateTicks 0 }
@@ -195,18 +197,24 @@
             :return "BUSY"
         }
 
-        :if ($slayerV3MacRotateCount < 3) do={
-            :local rnd [:rndstr from="0123456789ABCDEF" length=6]
-            :local newMac ($prefix . ":" . [:pick $rnd 0 2] . ":" . [:pick $rnd 2 4] . ":" . [:pick $rnd 4 6])
+        :if ($slayerV3MacRotateCount < 10) do={
+            :local rnd [:rndstr from="0123456789ABCDEF" length=10]
+            :local newMac ("02:" . [:pick $rnd 0 2] . ":" . [:pick $rnd 2 4] . ":" . [:pick $rnd 4 6] . ":" . [:pick $rnd 6 8] . ":" . [:pick $rnd 8 10])
+            :if ($newMac = $slayerV3LastRandomMAC) do={
+                :set rnd [:rndstr from="0123456789ABCDEF" length=10]
+                :set newMac ("02:" . [:pick $rnd 0 2] . ":" . [:pick $rnd 2 4] . ":" . [:pick $rnd 4 6] . ":" . [:pick $rnd 6 8] . ":" . [:pick $rnd 8 10])
+            }
+            :set slayerV3LastRandomMAC $newMac
             :set slayerV3MacRotateCount ($slayerV3MacRotateCount + 1)
-            :log warning ("SLAYER V3: Applying random MAC #" . $slayerV3MacRotateCount . " -> " . $newMac)
-            :set slayerV3Stage ("MAC ROTATION: set MAC " . $newMac)
+            :log warning ("SLAYER V3: Applying random locally-administered MAC #" . $slayerV3MacRotateCount . "/10 -> " . $newMac)
+            :set slayerV3Stage ("MAC ROTATION: set random MAC " . $newMac)
             /interface ethernet set [:pick $eids 0] mac-address=$newMac
         } else={
-            :log warning "SLAYER V3: Three random MAC changes used; restoring factory MAC."
+            :log warning "SLAYER V3: Ten random MAC attempts used; restoring factory MAC."
             :set slayerV3Stage ("MAC ROTATION: reset hardware MAC on " . $iface)
             /interface ethernet reset-mac-address [:pick $eids 0]
             :set slayerV3MacRotateCount 0
+            :set slayerV3LastRandomMAC ""
         }
 
         :set slayerV3Stage ("MAC ROTATION: enable PPPoE " . $ppp)
@@ -412,8 +420,9 @@
                                                 :log warning "SLAYER V3: MAC rotation restored a private IP; preserving the connection."
                                             }
                                         } else={
+                                            :set slayerV3NoIPFailures 0
                                             :set slayerV3OutageCooldown 5
-                                            :log error "SLAYER V3: MAC rotation did not restore PPPoE IP; next recovery attempt in 5 minutes."
+                                            :log error ("SLAYER V3: MAC rotation #" . $slayerV3MacRotateCount . " failed; cooldown 5 minutes, then start a fresh three-cycle reconnect window.")
                                         }
                                     } else={
                                         :set slayerV3OutageCooldown 2
