@@ -47,8 +47,8 @@
 # LOCK
 # =================================================
 :if ($slayerV3Running = true) do={
-
-    :return
+    :log info "SLAYER V3: Previous execution is still running; this scheduler tick is skipped."
+    :return ""
 }
 :set slayerV3Running true
 :set slayerV3Stage "START / LOCK ACQUIRED"
@@ -244,12 +244,10 @@
     } else={
         :local wanRunning [/interface ethernet get [:pick $wanIds 0] running]
         :if ($wanRunning = false) do={
-
             :set slayerV3PrivateTicks 0
         } else={
             :local currentIP [$getIP $pppoeName]
             :local state [$classifyIP $currentIP]
-
 
             :if ($state = "PUBLIC") do={
                 :set slayerV3Stage "MAIN: verify public-IP internet reachability"
@@ -338,10 +336,8 @@
                             }
                         }
                     } else={
-
                         :if ($slayerV3OutageCooldown > 0) do={
                             :set slayerV3OutageCooldown ($slayerV3OutageCooldown - 1)
-
                         } else={
                             :log warning "SLAYER V3: Internet appears unreachable; one outage reconnect attempt."
                             :local result [$reconnect $pppoeName 60]
@@ -377,7 +373,6 @@
                     # PPPoE has no IP: three failed cycles trigger MAC rotation.
                     :if ($slayerV3OutageCooldown > 0) do={
                         :set slayerV3OutageCooldown ($slayerV3OutageCooldown - 1)
-
                     } else={
                         :log warning ("SLAYER V3: PPPoE has no IP; controlled reconnect attempt. No-IP failure cycles=" . $slayerV3NoIPFailures . "/3.")
                         :local result [$reconnect $pppoeName 5]
@@ -456,4 +451,3 @@
 # =================================================
 :set slayerV3Stage "UNLOCK"
 :set slayerV3Running false
-
