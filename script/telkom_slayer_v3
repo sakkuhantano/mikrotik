@@ -50,7 +50,7 @@
 }
 :set slayerV3Running true
 :set slayerV3Stage "START / LOCK ACQUIRED"
-:log info "SLAYER V3: Execution started; lock acquired."
+
 
 :onerror slayerV3Error in={
 
@@ -99,7 +99,7 @@
         :local p1 [/ping address=1.1.1.1 count=2]
         :set slayerV3Stage "INTERNET PROBE: ping 8.8.8.8"
         :local p2 [/ping address=8.8.8.8 count=2]
-        :log info ("SLAYER V3: Internet probe results: 1.1.1.1=" . $p1 . "/2, 8.8.8.8=" . $p2 . "/2")
+        # Probe details are intentionally omitted to keep the system log quiet.
         :if (($p1 > 0) || ($p2 > 0)) do={ :return true }
         :return false
     }
@@ -271,7 +271,7 @@
                     :if ($internetOK = true) do={
                         :set slayerV3OutageCooldown 0
                         :set slayerV3PrivateTicks ($slayerV3PrivateTicks + 1)
-                        :log info ("SLAYER V3: Private IP with working internet; preserving connection. Private timer=" . $slayerV3PrivateTicks . "/30 minutes; failed reconnect cycles=" . $slayerV3ReconnectFailures . "/3")
+
                         :if ($slayerV3PrivateTicks >= 30) do={
                             :set slayerV3PrivateTicks 0
                             :log warning "SLAYER V3: 30-minute private-IP interval reached; starting exactly one reconnect cycle."
@@ -331,7 +331,7 @@
                         :log warning "SLAYER V3: Private IP but external probes failed; checking outage cooldown."
                         :if ($slayerV3OutageCooldown > 0) do={
                             :set slayerV3OutageCooldown ($slayerV3OutageCooldown - 1)
-                            :log warning ("SLAYER V3: Internet-outage retry cooldown remaining=" . $slayerV3OutageCooldown . " minute(s).")
+
                         } else={
                             :log warning "SLAYER V3: Internet appears unreachable; one outage reconnect attempt."
                             :local result [$reconnect $pppoeName]
@@ -367,7 +367,7 @@
                     # PPPoE has no IP: three failed cycles trigger MAC rotation.
                     :if ($slayerV3OutageCooldown > 0) do={
                         :set slayerV3OutageCooldown ($slayerV3OutageCooldown - 1)
-                        :log warning ("SLAYER V3: No-IP recovery cooldown remaining=" . $slayerV3OutageCooldown . " minute(s).")
+
                     } else={
                         :log warning ("SLAYER V3: PPPoE has no IP; controlled reconnect attempt. No-IP failure cycles=" . $slayerV3NoIPFailures . "/3.")
                         :local result [$reconnect $pppoeName 5]
@@ -446,4 +446,4 @@
 # =================================================
 :set slayerV3Stage "UNLOCK"
 :set slayerV3Running false
-:log info "SLAYER V3: Execution finished; lock released."
+
