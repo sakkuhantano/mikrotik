@@ -45,7 +45,7 @@
 # LOCK
 # =================================================
 :if ($slayerV3Running = true) do={
-    :log warning "SLAYER V3: Previous execution still running; skip this scheduler tick."
+
     :return
 }
 :set slayerV3Running true
@@ -244,12 +244,12 @@
     } else={
         :local wanRunning [/interface ethernet get [:pick $wanIds 0] running]
         :if ($wanRunning = false) do={
-            :log warning ("SLAYER V3: WAN link " . $wanIf . " is DOWN; no PPPoE action.")
+
             :set slayerV3PrivateTicks 0
         } else={
             :local currentIP [$getIP $pppoeName]
             :local state [$classifyIP $currentIP]
-            :log info ("SLAYER V3: Current PPPoE IP=" . $currentIP . " state=" . $state)
+
 
             :if ($state = "PUBLIC") do={
                 :set slayerV3PrivateTicks 0
@@ -328,7 +328,7 @@
                             }
                         }
                     } else={
-                        :log warning "SLAYER V3: Private IP but external probes failed; checking outage cooldown."
+
                         :if ($slayerV3OutageCooldown > 0) do={
                             :set slayerV3OutageCooldown ($slayerV3OutageCooldown - 1)
 
