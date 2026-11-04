@@ -252,6 +252,11 @@
 
 
             :if ($state = "PUBLIC") do={
+                :set slayerV3Stage "MAIN: verify public-IP internet reachability"
+                :local internetOK [$probeInternet]
+                :if ($internetOK = true) do={
+                    :log info ("SLAYER V3: Internet detected; PPPoE IP=" . $currentIP . " (PUBLIC)")
+                }
                 :set slayerV3PrivateTicks 0
                 :set slayerV3ReconnectFailures 0
                 :set slayerV3NoIPFailures 0
@@ -269,6 +274,7 @@
                 :if ($state = "PRIVATE") do={
                     :set slayerV3NoIPFailures 0
                     :if ($internetOK = true) do={
+                        :log info ("SLAYER V3: Internet detected; PPPoE IP=" . $currentIP . " (PRIVATE)")
                         :set slayerV3OutageCooldown 0
                         :set slayerV3PrivateTicks ($slayerV3PrivateTicks + 1)
 
