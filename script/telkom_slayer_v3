@@ -7,9 +7,9 @@
 # - Private IP + internet reachable: do not disconnect for 30 minutes.
 # - At 30 minutes: one controlled reconnect only.
 # - After 3 failed private-IP reconnect cycles: one MAC rotation.
-# - After MAC rotation: preserve a working connection and restart 30m timer.
-# - Internet outage / PPPoE dead: one reconnect per recovery cycle,
-#   with a 2-minute retry interval; never run rapid reconnect loops.
+# - PPPoE no-IP freeze: reconnect; after 3 failed no-IP cycles, rotate MAC.
+# - After MAC rotation: preserve a working connection; no-IP retries cool down 5m.
+# - Internet outage: one reconnect per recovery cycle with a 2-minute retry interval.
 # - External reachability: either 1.1.1.1 OR 8.8.8.8 replying is sufficient.
 # - One execution at a time; detailed stage logging for diagnosis.
 # =================================================
@@ -24,6 +24,7 @@
 :global slayerV3Running
 :global slayerV3MacRotateCount
 :global slayerV3ReconnectFailures
+:global slayerV3NoIPFailures
 :global slayerV3PrivateTicks
 :global slayerV3OutageCooldown
 :global slayerV3LastPublicIP
@@ -32,6 +33,7 @@
 :if ([:typeof $slayerV3Running] = "nothing") do={ :set slayerV3Running false }
 :if ([:typeof $slayerV3MacRotateCount] = "nothing") do={ :set slayerV3MacRotateCount 0 }
 :if ([:typeof $slayerV3ReconnectFailures] = "nothing") do={ :set slayerV3ReconnectFailures 0 }
+:if ([:typeof $slayerV3NoIPFailures] = "nothing") do={ :set slayerV3NoIPFailures 0 }
 :if ([:typeof $slayerV3PrivateTicks] = "nothing") do={ :set slayerV3PrivateTicks 0 }
 :if ([:typeof $slayerV3OutageCooldown] = "nothing") do={ :set slayerV3OutageCooldown 0 }
 :if ([:typeof $slayerV3LastPublicIP] = "nothing") do={ :set slayerV3LastPublicIP "" }
@@ -88,7 +90,6 @@
 
     # -------------------------------------------------
     # TEST INTERNET REACHABILITY
-    # Either target replying means internet is reachable.
     # -------------------------------------------------
     :local probeInternet do={
         :global slayerV3Stage
@@ -116,7 +117,6 @@
 
         :set slayerV3Stage ("RECONNECT: disable PPPoE " . $ppp)
         /interface pppoe-client disable $pids
-
         :local isDown false
         :for n from=1 to=10 do={
             :if ($isDown = false) do={
@@ -137,7 +137,6 @@
         :set slayerV3Stage ("RECONNECT: enable PPPoE " . $ppp)
         /interface pppoe-client enable $pids
         :set slayerV3Stage ("RECONNECT: wait up to 20 seconds for IP " . $ppp)
-
         :for n from=1 to=40 do={
             :local ip [$getIP $ppp]
             :if ([:len $ip] > 0) do={
@@ -152,7 +151,7 @@
     }
 
     # -------------------------------------------------
-    # ONE MAC ROTATION AFTER THREE FAILED RECONNECT CYCLES
+    # ONE MAC ROTATION
     # -------------------------------------------------
     :local rotateMAC do={
         :global slayerV3Stage
@@ -160,7 +159,6 @@
         :local iface $1
         :local ppp $2
         :local prefix $3
-
         :local eids [/interface ethernet find name=$iface]
         :if ([:len $eids] = 0) do={
             :log error ("SLAYER V3: Ethernet interface not found: " . $iface)
@@ -241,6 +239,7 @@
             :if ($state = "PUBLIC") do={
                 :set slayerV3PrivateTicks 0
                 :set slayerV3ReconnectFailures 0
+                :set slayerV3NoIPFailures 0
                 :set slayerV3OutageCooldown 0
                 :if ($currentIP != $slayerV3LastPublicIP) do={
                     :log warning ("SLAYER V3: Public IP changed -> " . $currentIP)
@@ -253,11 +252,11 @@
                 :local internetOK [$probeInternet]
 
                 :if ($state = "PRIVATE") do={
+                    :set slayerV3NoIPFailures 0
                     :if ($internetOK = true) do={
                         :set slayerV3OutageCooldown 0
                         :set slayerV3PrivateTicks ($slayerV3PrivateTicks + 1)
                         :log info ("SLAYER V3: Private IP with working internet; preserving connection. Private timer=" . $slayerV3PrivateTicks . "/30 minutes; failed reconnect cycles=" . $slayerV3ReconnectFailures . "/3")
-
                         :if ($slayerV3PrivateTicks >= 30) do={
                             :set slayerV3PrivateTicks 0
                             :log warning "SLAYER V3: 30-minute private-IP interval reached; starting exactly one reconnect cycle."
@@ -275,7 +274,7 @@
                                 :if ($result = "PRIVATE") do={
                                     :set slayerV3ReconnectFailures ($slayerV3ReconnectFailures + 1)
                                     :log warning ("SLAYER V3: Reconnect cycle failed to obtain public IP; consecutive failures=" . $slayerV3ReconnectFailures . "/3. Keeping current connection.")
-                                    :set slayerV3Stage "POST-RECONNECT: verify internet before deciding whether connection is healthy"
+                                    :set slayerV3Stage "POST-RECONNECT: verify internet"
                                     :local postProbe [$probeInternet]
                                     :if ($postProbe = false) do={
                                         :log warning "SLAYER V3: Internet probe failed after reconnect; outage recovery will be rate-limited."
@@ -350,16 +349,18 @@
                         }
                     }
                 } else={
-                    # PPPoE has no IP: one reconnect attempt, never a rapid loop.
+                    # PPPoE has no IP: three failed cycles trigger MAC rotation.
                     :if ($slayerV3OutageCooldown > 0) do={
                         :set slayerV3OutageCooldown ($slayerV3OutageCooldown - 1)
                         :log warning ("SLAYER V3: No-IP recovery cooldown remaining=" . $slayerV3OutageCooldown . " minute(s).")
                     } else={
-                        :log warning "SLAYER V3: PPPoE has no IP; one controlled reconnect attempt."
+                        :log warning ("SLAYER V3: PPPoE has no IP; controlled reconnect attempt. No-IP failure cycles=" . $slayerV3NoIPFailures . "/3.")
                         :local result [$reconnect $pppoeName]
                         :if ($result = "PUBLIC") do={
+                            :set slayerV3NoIPFailures 0
                             :set slayerV3ReconnectFailures 0
                             :set slayerV3PrivateTicks 0
+                            :set slayerV3OutageCooldown 0
                             :local newIP [$getIP $pppoeName]
                             :if ($newIP != $slayerV3LastPublicIP) do={
                                 :set slayerV3Stage ("DDNS: update after no-IP recovery; public IP " . $newIP)
@@ -368,6 +369,7 @@
                             }
                         } else={
                             :if ($result = "PRIVATE") do={
+                                :set slayerV3NoIPFailures 0
                                 :set slayerV3PrivateTicks 0
                                 :set slayerV3ReconnectFailures ($slayerV3ReconnectFailures + 1)
                                 :set slayerV3Stage "NO-IP RECOVERY: verify internet after reconnect"
@@ -379,8 +381,38 @@
                                     :log error "SLAYER V3: PPPoE got private IP but internet remains unreachable; retry in 2 minutes."
                                 }
                             } else={
-                                :set slayerV3OutageCooldown 2
-                                :log error "SLAYER V3: No-IP reconnect failed; retry in 2 minutes."
+                                :if ($result = "BUSY") do={
+                                    :log warning "SLAYER V3: No-IP reconnect skipped because PPPoE did not stop cleanly; not counted as a failed cycle."
+                                } else={
+                                    :set slayerV3NoIPFailures ($slayerV3NoIPFailures + 1)
+                                    :log error ("SLAYER V3: PPPoE still has no IP after reconnect. No-IP failure cycles=" . $slayerV3NoIPFailures . "/3.")
+                                    :if ($slayerV3NoIPFailures >= 3) do={
+                                        :log warning "SLAYER V3: Three consecutive no-IP recovery cycles failed; initiating MAC rotation."
+                                        :local macResult [$rotateMAC $wanIf $pppoeName $macPrefix]
+                                        :if (($macResult = "PUBLIC") || ($macResult = "PRIVATE")) do={
+                                            :set slayerV3NoIPFailures 0
+                                            :set slayerV3OutageCooldown 0
+                                            :set slayerV3PrivateTicks 0
+                                            :if ($macResult = "PUBLIC") do={
+                                                :set slayerV3ReconnectFailures 0
+                                                :local newIP [$getIP $pppoeName]
+                                                :if ($newIP != $slayerV3LastPublicIP) do={
+                                                    :set slayerV3Stage ("DDNS: update after no-IP MAC rotation; public IP " . $newIP)
+                                                    /system script run update_ddns
+                                                    :set slayerV3LastPublicIP $newIP
+                                                }
+                                            } else={
+                                                :set slayerV3ReconnectFailures ($slayerV3ReconnectFailures + 1)
+                                                :log warning "SLAYER V3: MAC rotation restored a private IP; preserving the connection."
+                                            }
+                                        } else={
+                                            :set slayerV3OutageCooldown 5
+                                            :log error "SLAYER V3: MAC rotation did not restore PPPoE IP; next recovery attempt in 5 minutes."
+                                        }
+                                    } else={
+                                        :set slayerV3OutageCooldown 2
+                                    }
+                                }
                             }
                         }
                     }
