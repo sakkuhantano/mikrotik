@@ -283,7 +283,7 @@
                         :if ($slayerV3PrivateTicks >= 10) do={
                             :set slayerV3PrivateTicks 0
                             :log warning "SLAYER V3: 10-minute private-IP interval reached; starting exactly one reconnect cycle."
-                            :local result [$reconnect $pppoeName 60]
+                            :local result [$reconnect $pppoeName 120]
                             :if ($result = "PUBLIC") do={
                                 :set slayerV3ReconnectFailures 0
                                 :set slayerV3OutageCooldown 0
@@ -340,7 +340,7 @@
                             :set slayerV3OutageCooldown ($slayerV3OutageCooldown - 1)
                         } else={
                             :log warning "SLAYER V3: Internet appears unreachable; one outage reconnect attempt."
-                            :local result [$reconnect $pppoeName 60]
+                            :local result [$reconnect $pppoeName 120]
                             :if ($result = "PUBLIC") do={
                                 :set slayerV3ReconnectFailures 0
                                 :set slayerV3PrivateTicks 0
