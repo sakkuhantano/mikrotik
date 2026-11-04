@@ -112,8 +112,7 @@
     :local reconnect do={
         :global slayerV3Stage
         :local ppp $1
-        :local waitSeconds 60
-        :if ([:len $2] > 0) do={ :set waitSeconds $2 }
+        :local waitSeconds $2
         :local waitChecks ($waitSeconds * 2)
         :log warning ("SLAYER V3: Starting one controlled reconnect for " . $ppp . "; IP wait=" . $waitSeconds . " seconds.")
         :local pids [/interface pppoe-client find name=$ppp]
@@ -167,8 +166,7 @@
         :local iface $1
         :local ppp $2
         :local prefix $3
-        :local waitSeconds 20
-        :if ([:len $4] > 0) do={ :set waitSeconds $4 }
+        :local waitSeconds $4
         :local waitChecks ($waitSeconds * 2)
         :local eids [/interface ethernet find name=$iface]
         :if ([:len $eids] = 0) do={
@@ -287,7 +285,7 @@
                         :if ($slayerV3PrivateTicks >= 10) do={
                             :set slayerV3PrivateTicks 0
                             :log warning "SLAYER V3: 10-minute private-IP interval reached; starting exactly one reconnect cycle."
-                            :local result [$reconnect $pppoeName]
+                            :local result [$reconnect $pppoeName 60]
                             :if ($result = "PUBLIC") do={
                                 :set slayerV3ReconnectFailures 0
                                 :set slayerV3OutageCooldown 0
@@ -309,7 +307,7 @@
                                     }
                                     :if ($slayerV3ReconnectFailures >= 3) do={
                                         :log warning "SLAYER V3: Three private-IP reconnect cycles failed; one MAC rotation is now permitted."
-                                        :local macResult [$rotateMAC $wanIf $pppoeName $macPrefix]
+                                        :local macResult [$rotateMAC $wanIf $pppoeName $macPrefix 20]
                                         :if ($macResult = "PUBLIC") do={
                                             :set slayerV3ReconnectFailures 0
                                             :local newIP [$getIP $pppoeName]
@@ -346,7 +344,7 @@
 
                         } else={
                             :log warning "SLAYER V3: Internet appears unreachable; one outage reconnect attempt."
-                            :local result [$reconnect $pppoeName]
+                            :local result [$reconnect $pppoeName 60]
                             :if ($result = "PUBLIC") do={
                                 :set slayerV3ReconnectFailures 0
                                 :set slayerV3PrivateTicks 0
