@@ -161,6 +161,7 @@
     :local rotateMAC do={
         :global slayerV3Stage
         :global slayerV3MacRotateCount
+        :global slayerV3LastRandomMAC
         :local iface $1
         :local ppp $2
         :local prefix $3
