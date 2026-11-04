@@ -27,12 +27,14 @@
 :global slayerV3PrivateCount
 :global slayerV3PrivateCooldown
 :global slayerV3LastPublicIP
+:global slayerV3Stage
 
 :if ([:typeof $slayerV3Running] = "nothing") do={ :set slayerV3Running false }
 :if ([:typeof $slayerV3MacRotateCount] = "nothing") do={ :set slayerV3MacRotateCount 0 }
 :if ([:typeof $slayerV3PrivateCount] = "nothing") do={ :set slayerV3PrivateCount 0 }
 :if ([:typeof $slayerV3PrivateCooldown] = "nothing") do={ :set slayerV3PrivateCooldown 0 }
 :if ([:typeof $slayerV3LastPublicIP] = "nothing") do={ :set slayerV3LastPublicIP "" }
+:if ([:typeof $slayerV3Stage] = "nothing") do={ :set slayerV3Stage "INITIALIZATION" }
 
 # =================================================
 # LOCK
@@ -42,6 +44,8 @@
     :return
 }
 :set slayerV3Running true
+:set slayerV3Stage "START / LOCK ACQUIRED"
+:log info "SLAYER V3: Execution started; lock acquired."
 
 # Outer error handler ensures the lock is released after runtime errors.
 :onerror slayerV3Error in={
@@ -50,6 +54,8 @@
     # GET IP ADDRESS ASSIGNED TO PPPoE INTERFACE
     # -------------------------------------------------
     :local getIP do={
+        :global slayerV3Stage
+        :set slayerV3Stage "GET PPPoE IP"
         :local ppp $1
         :local ids [/ip address find interface=$ppp]
         :if ([:len $ids] = 0) do={ :return "" }
@@ -63,6 +69,8 @@
     # CLASSIFY IP: PUBLIC / PRIVATE / DEAD
     # -------------------------------------------------
     :local classifyIP do={
+        :global slayerV3Stage
+        :set slayerV3Stage "CLASSIFY IP"
         :local ip $1
         :if ([:len $ip] = 0) do={ :return "DEAD" }
 
@@ -95,6 +103,7 @@
     # Returns PUBLIC, PRIVATE, DEAD, or BUSY.
     # -------------------------------------------------
     :local reconnect do={
+        :global slayerV3Stage
         :local ppp $1
         :log warning ("SLAYER V3: Reconnect PPPoE " . $ppp)
 
@@ -104,6 +113,8 @@
             :return "DEAD"
         }
 
+        :set slayerV3Stage ("RECONNECT: disable PPPoE " . $ppp)
+        :set slayerV3Stage ("MAC ROTATION: disable PPPoE " . $ppp)
         /interface pppoe-client disable $pids
 
         :local isDown false
@@ -119,16 +130,23 @@
 
         :if ($isDown = false) do={
             :log error "SLAYER V3: PPPoE did not go down within about 1 second; abort reconnect."
+            :set slayerV3Stage ("RECONNECT: restore PPPoE after BUSY " . $ppp)
+            :set slayerV3Stage ("MAC ROTATION: restore PPPoE after BUSY " . $ppp)
             /interface pppoe-client enable $pids
             :return "BUSY"
         }
 
+        :set slayerV3Stage ("RECONNECT: find ARP entries on " . $wanIf)
         :local arpEntries [/ip arp find interface=$wanIf]
         :if ([:len $arpEntries] > 0) do={
+            :set slayerV3Stage ("RECONNECT: remove ARP entries on " . $wanIf)
+            :set slayerV3Stage ("MAC ROTATION: remove ARP entries on " . $iface)
             /ip arp remove $arpEntries
         }
+        :set slayerV3Stage ("RECONNECT: enable PPPoE " . $ppp)
         /interface pppoe-client enable $pids
 
+        :set slayerV3Stage ("RECONNECT: wait for IP " . $ppp)
         :for n from=1 to=50 do={
             :local ip [$getIP $ppp]
             :if ([:len $ip] > 0) do={
@@ -147,6 +165,7 @@
     # ROTATE MAC, THEN RECONNECT AND VERIFY.
     # -------------------------------------------------
     :local rotateMAC do={
+        :global slayerV3Stage
         :global slayerV3MacRotateCount
         :local iface $1
         :local ppp $2
@@ -190,19 +209,24 @@
             :local newMac ($prefix . ":" . $a . ":" . $b . ":" . $c)
             :set slayerV3MacRotateCount ($slayerV3MacRotateCount + 1)
             :log warning ("SLAYER V3: Random MAC #" . $slayerV3MacRotateCount . " -> " . $newMac)
+            :set slayerV3Stage ("MAC ROTATION: set new MAC " . $newMac)
             /interface ethernet set [:pick $eids 0] mac-address=$newMac
         } else={
             :log warning "SLAYER V3: Three random MAC rotations used; restore hardware MAC."
+            :set slayerV3Stage ("MAC ROTATION: reset hardware MAC on " . $iface)
             /interface ethernet reset-mac-address $iface
             :set slayerV3MacRotateCount 0
         }
 
+        :set slayerV3Stage ("MAC ROTATION: find ARP entries on " . $iface)
         :local arpEntries [/ip arp find interface=$iface]
         :if ([:len $arpEntries] > 0) do={
             /ip arp remove $arpEntries
         }
+        :set slayerV3Stage ("MAC ROTATION: enable PPPoE " . $ppp)
         /interface pppoe-client enable $pids
 
+        :set slayerV3Stage ("MAC ROTATION: wait for IP " . $ppp)
         :for n from=1 to=50 do={
             :local ip [$getIP $ppp]
             :if ([:len $ip] > 0) do={
@@ -220,6 +244,7 @@
     # =================================================
     # MAIN
     # =================================================
+    :set slayerV3Stage "MAIN: find WAN interface"
     :local wanIds [/interface ethernet find name=$wanIf]
 
     :if ([:len $wanIds] = 0) do={
@@ -244,6 +269,7 @@
 
                 :if ($currentIP != $slayerV3LastPublicIP) do={
                     :log warning ("SLAYER V3: Public IP changed -> " . $currentIP)
+                    :set slayerV3Stage ("DDNS: update after public IP " . $currentIP)
                     /system script run update_ddns
                     :set slayerV3LastPublicIP $currentIP
                 }
@@ -271,6 +297,9 @@
                             :set slayerV3PrivateCooldown 0
                             :local newIP [$getIP $pppoeName]
                             :if ($newIP != $slayerV3LastPublicIP) do={
+                                :set slayerV3Stage "DDNS: update after dead-state recovery"
+                                :set slayerV3Stage "DDNS: update after dead-state MAC rotation"
+                                :set slayerV3Stage "DDNS: update after private-state MAC rotation"
                                 /system script run update_ddns
                                 :set slayerV3LastPublicIP $newIP
                             }
@@ -345,6 +374,7 @@
                                 :set slayerV3PrivateCooldown 0
                                 :local newIP [$getIP $pppoeName]
                                 :if ($newIP != $slayerV3LastPublicIP) do={
+                                    :set slayerV3Stage "DDNS: update after private-state reconnect"
                                     /system script run update_ddns
                                     :set slayerV3LastPublicIP $newIP
                                 }
@@ -394,10 +424,12 @@
     }
 
 } do={
-    :log error ("SLAYER V3: Runtime error -> " . $slayerV3Error)
+    :log error ("SLAYER V3: Runtime error at [" . $slayerV3Stage . "] -> " . $slayerV3Error)
 }
 
 # =================================================
 # UNLOCK
 # =================================================
+:set slayerV3Stage "UNLOCK"
 :set slayerV3Running false
+:log info "SLAYER V3: Execution finished; lock released."
