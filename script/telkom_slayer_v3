@@ -29,6 +29,7 @@
 :global slayerV3PrivateTicks
 :global slayerV3OutageCooldown
 :global slayerV3LastPublicIP
+:global slayerV3LastLoggedInternetIP
 :global slayerV3Stage
 
 :if ([:typeof $slayerV3Running] = "nothing") do={ :set slayerV3Running false }
@@ -39,6 +40,7 @@
 :if ([:typeof $slayerV3PrivateTicks] = "nothing") do={ :set slayerV3PrivateTicks 0 }
 :if ([:typeof $slayerV3OutageCooldown] = "nothing") do={ :set slayerV3OutageCooldown 0 }
 :if ([:typeof $slayerV3LastPublicIP] = "nothing") do={ :set slayerV3LastPublicIP "" }
+:if ([:typeof $slayerV3LastLoggedInternetIP] = "nothing") do={ :set slayerV3LastLoggedInternetIP "" }
 :if ([:typeof $slayerV3Stage] = "nothing") do={ :set slayerV3Stage "INITIALIZATION" }
 
 # =================================================
@@ -254,8 +256,9 @@
             :if ($state = "PUBLIC") do={
                 :set slayerV3Stage "MAIN: verify public-IP internet reachability"
                 :local internetOK [$probeInternet]
-                :if ($internetOK = true) do={
+                :if (($internetOK = true) && ($currentIP != $slayerV3LastLoggedInternetIP)) do={
                     :log info ("SLAYER V3: Internet detected; PPPoE IP=" . $currentIP . " (PUBLIC)")
+                    :set slayerV3LastLoggedInternetIP $currentIP
                 }
                 :set slayerV3PrivateTicks 0
                 :set slayerV3ReconnectFailures 0
@@ -274,7 +277,10 @@
                 :if ($state = "PRIVATE") do={
                     :set slayerV3NoIPFailures 0
                     :if ($internetOK = true) do={
-                        :log info ("SLAYER V3: Internet detected; PPPoE IP=" . $currentIP . " (PRIVATE)")
+                        :if ($currentIP != $slayerV3LastLoggedInternetIP) do={
+                            :log info ("SLAYER V3: Internet detected; PPPoE IP=" . $currentIP . " (PRIVATE)")
+                            :set slayerV3LastLoggedInternetIP $currentIP
+                        }
                         :set slayerV3OutageCooldown 0
                         :set slayerV3PrivateTicks ($slayerV3PrivateTicks + 1)
 
