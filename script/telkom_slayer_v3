@@ -4,8 +4,8 @@
 #
 # Policy:
 # - Public IP: keep connection; update DDNS only if IP changes.
-# - Private IP + internet reachable: do not disconnect for 30 minutes.
-# - At 30 minutes: one controlled reconnect only.
+# - Private IP + internet reachable: do not disconnect for 10 minutes.
+# - At 10 minutes: one controlled reconnect only.
 # - After 3 failed private-IP reconnect cycles: one MAC rotation.
 # - PPPoE no-IP freeze: three fast reconnect cycles (5s IP wait each), then MAC rotation (15s IP wait).
 # - After MAC rotation: preserve a working connection; no-IP retries cool down 5m.
@@ -112,7 +112,7 @@
     :local reconnect do={
         :global slayerV3Stage
         :local ppp $1
-        :local waitSeconds 20
+        :local waitSeconds 60
         :if ([:len $2] > 0) do={ :set waitSeconds $2 }
         :local waitChecks ($waitSeconds * 2)
         :log warning ("SLAYER V3: Starting one controlled reconnect for " . $ppp . "; IP wait=" . $waitSeconds . " seconds.")
@@ -284,9 +284,9 @@
                         :set slayerV3OutageCooldown 0
                         :set slayerV3PrivateTicks ($slayerV3PrivateTicks + 1)
 
-                        :if ($slayerV3PrivateTicks >= 30) do={
+                        :if ($slayerV3PrivateTicks >= 10) do={
                             :set slayerV3PrivateTicks 0
-                            :log warning "SLAYER V3: 30-minute private-IP interval reached; starting exactly one reconnect cycle."
+                            :log warning "SLAYER V3: 10-minute private-IP interval reached; starting exactly one reconnect cycle."
                             :local result [$reconnect $pppoeName]
                             :if ($result = "PUBLIC") do={
                                 :set slayerV3ReconnectFailures 0
