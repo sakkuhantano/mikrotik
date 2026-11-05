@@ -250,7 +250,25 @@
             }
             :delay 500ms
         }
-        :log error ("SLAYER V3: No PPPoE IP after MAC rotation (" . $waitSeconds . " seconds).")
+
+        # PPPoE may already be authenticated/connected and internet may already
+        # be reachable while local-address is populated a little later.
+        :set slayerV3Stage "MAC ROTATION: late IP grace check"
+        :local lateInternetOK [$probeInternet]
+        :if ($lateInternetOK = true) do={
+            :log warning ("SLAYER V3: MAC rotation wait expired but internet is reachable; giving PPPoE IP a 10-second grace window.")
+            :for n from=1 to=20 do={
+                :local ip [$getIP $ppp]
+                :if ([:len $ip] > 0) do={
+                    :local state [$classifyIP $ip]
+                    :log warning ("SLAYER V3: MAC rotation late-grace IP=" . $ip . " state=" . $state)
+                    :return $state
+                }
+                :delay 500ms
+            }
+        }
+
+        :log error ("SLAYER V3: No PPPoE IP after MAC rotation (" . $waitSeconds . " seconds + late grace).")
         :return "DEAD"
     }
 
