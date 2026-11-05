@@ -263,6 +263,7 @@
             :local state [$classifyIP $currentIP]
 
             :if ($state = "PUBLIC") do={
+                :set slayerV3PrivateReconnectPending false
                 :set slayerV3Stage "MAIN: verify public-IP internet reachability"
                 :local internetOK [$probeInternet]
                 :if (($internetOK = true) && ($currentIP != $slayerV3LastLoggedInternetIP)) do={
