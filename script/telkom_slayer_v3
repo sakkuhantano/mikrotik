@@ -61,8 +61,19 @@
     # -------------------------------------------------
     :local getIP do={
         :global slayerV3Stage
-        :set slayerV3Stage "READ PPPoE IP ADDRESS"
+        :global slayerV3MonitorIP
+        :set slayerV3Stage "READ PPPoE CLIENT MONITOR LOCAL-ADDRESS"
         :local ppp $1
+        :set slayerV3MonitorIP ""
+        /interface pppoe-client monitor $ppp once do={
+            :global slayerV3MonitorIP
+            :set slayerV3MonitorIP $"local-address"
+        }
+        :if ([:len $slayerV3MonitorIP] > 0) do={
+            :return $slayerV3MonitorIP
+        }
+        # Fallback for RouterOS builds where monitor has not populated local-address yet.
+        :set slayerV3Stage "READ PPPoE IP ADDRESS FALLBACK"
         :local ids [/ip address find interface=$ppp]
         :if ([:len $ids] = 0) do={ :return "" }
         :local addr [/ip address get [:pick $ids 0] address]
@@ -283,7 +294,7 @@
                         :if ($slayerV3PrivateTicks >= 10) do={
                             :set slayerV3PrivateTicks 0
                             :log warning "SLAYER V3: 10-minute private-IP interval reached; starting exactly one reconnect cycle."
-                            :local result [$reconnect $pppoeName 360]
+                            :local result [$reconnect $pppoeName 30]
                             :if ($result = "PUBLIC") do={
                                 :set slayerV3ReconnectFailures 0
                                 :set slayerV3OutageCooldown 0
@@ -340,7 +351,7 @@
                             :set slayerV3OutageCooldown ($slayerV3OutageCooldown - 1)
                         } else={
                             :log warning "SLAYER V3: Internet appears unreachable; one outage reconnect attempt."
-                            :local result [$reconnect $pppoeName 360]
+                            :local result [$reconnect $pppoeName 30]
                             :if ($result = "PUBLIC") do={
                                 :set slayerV3ReconnectFailures 0
                                 :set slayerV3PrivateTicks 0
