@@ -25,6 +25,7 @@
 :global slayerV3MacRotateCount
 :global slayerV3LastRandomMAC
 :global slayerV3ReconnectFailures
+:global slayerV3PrivateReconnectPending
 :global slayerV3NoIPFailures
 :global slayerV3PrivateTicks
 :global slayerV3OutageCooldown
@@ -36,6 +37,7 @@
 :if ([:typeof $slayerV3MacRotateCount] = "nothing") do={ :set slayerV3MacRotateCount 0 }
 :if ([:typeof $slayerV3LastRandomMAC] = "nothing") do={ :set slayerV3LastRandomMAC "" }
 :if ([:typeof $slayerV3ReconnectFailures] = "nothing") do={ :set slayerV3ReconnectFailures 0 }
+:if ([:typeof $slayerV3PrivateReconnectPending] = "nothing") do={ :set slayerV3PrivateReconnectPending false }
 :if ([:typeof $slayerV3NoIPFailures] = "nothing") do={ :set slayerV3NoIPFailures 0 }
 :if ([:typeof $slayerV3PrivateTicks] = "nothing") do={ :set slayerV3PrivateTicks 0 }
 :if ([:typeof $slayerV3OutageCooldown] = "nothing") do={ :set slayerV3OutageCooldown 0 }
@@ -284,6 +286,37 @@
                 :if ($state = "PRIVATE") do={
                     :set slayerV3NoIPFailures 0
                     :if ($internetOK = true) do={
+                        # A private-IP reconnect may obtain its IP just after the 30-second wait expires.
+                        # Count that late result on this scheduler run instead of losing the failed cycle.
+                        :if ($slayerV3PrivateReconnectPending = true) do={
+                            :set slayerV3PrivateReconnectPending false
+                            :set slayerV3ReconnectFailures ($slayerV3ReconnectFailures + 1)
+                            :set slayerV3PrivateTicks 0
+                            :log warning ("SLAYER V3: Late PPPoE IP detected after the 30-second reconnect timeout; private-IP failure cycles=" . $slayerV3ReconnectFailures . "/3.")
+                            :if ($slayerV3ReconnectFailures >= 3) do={
+                                :log warning "SLAYER V3: Three private-IP reconnect cycles failed; one MAC rotation is now permitted."
+                                :local macResult [$rotateMAC $wanIf $pppoeName $macPrefix 20]
+                                :if ($macResult = "PUBLIC") do={
+                                    :set slayerV3ReconnectFailures 0
+                                    :set slayerV3OutageCooldown 0
+                                    :local newIP [$getIP $pppoeName]
+                                    :if ($newIP != $slayerV3LastPublicIP) do={
+                                        :set slayerV3Stage ("DDNS: update after late-reconnect MAC rotation; public IP " . $newIP)
+                                        /system script run update_ddns
+                                        :set slayerV3LastPublicIP $newIP
+                                    }
+                                } else={
+                                    :if ($macResult = "PRIVATE") do={
+                                        :set slayerV3ReconnectFailures 0
+                                        :set slayerV3PrivateTicks 0
+                                        :log warning "SLAYER V3: MAC rotation after late reconnect still returned private IP; preserving connection and restarting 10-minute interval."
+                                    } else={
+                                        :log error "SLAYER V3: MAC rotation after late reconnect did not restore PPPoE; outage recovery cooldown applied."
+                                        :set slayerV3OutageCooldown 2
+                                    }
+                                }
+                            }
+                        }
                         :if ($currentIP != $slayerV3LastLoggedInternetIP) do={
                             :log info ("SLAYER V3: Internet detected; PPPoE IP=" . $currentIP . " (PRIVATE)")
                             :set slayerV3LastLoggedInternetIP $currentIP
@@ -340,7 +373,8 @@
                                     :if ($result = "BUSY") do={
                                         :log warning "SLAYER V3: Reconnect skipped because PPPoE did not stop cleanly."
                                     } else={
-                                        :log error "SLAYER V3: Reconnect did not obtain an IP; outage cooldown applied."
+                                        :set slayerV3PrivateReconnectPending true
+                                        :log error "SLAYER V3: No IP within 30 seconds; will classify a late private IP on the next scheduler run."
                                         :set slayerV3OutageCooldown 2
                                     }
                                 }
