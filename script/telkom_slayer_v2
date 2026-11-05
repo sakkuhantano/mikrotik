@@ -1,182 +1,136 @@
-# =================================================
-# PPPOE PUBLIC IP AUTO RECONNECT
-# RouterOS 7
-# =================================================
 :local pppoeName "Telkom"
 :local wanIf "ether1"
-:local macPrefix "BC:C0:0F"
-# =================================================
-# GLOBAL
-# =================================================
 :global slayerRunning
 :global macRotateCount
 :global telkomRetry
 :global pppoeDeadRetry
 :global slayerLastPublicIP
-:if ([:typeof $slayerRunning] = "nothing") do={ :set slayerRunning false }
-:if ([:typeof $macRotateCount] = "nothing") do={ :set macRotateCount 0 }
-:if ([:typeof $telkomRetry] = "nothing") do={ :set telkomRetry 0 }
-:if ([:typeof $pppoeDeadRetry] = "nothing") do={ :set pppoeDeadRetry 0 }
-:if ([:typeof $slayerLastPublicIP] = "nothing") do={ :set slayerLastPublicIP "" }
-# =================================================
-# LOCK
-# =================================================
-:if ($slayerRunning = true) do={
-    :log warning "SLAYER: Script masih berjalan, skip."
-    :return
-}
+:global slayerLastRandomMAC
+:global slayerV2Cooldown
+:if ([:typeof $slayerRunning]="nothing") do={:set slayerRunning false}
+:if ([:typeof $macRotateCount]="nothing") do={:set macRotateCount 0}
+:if ([:typeof $telkomRetry]="nothing") do={:set telkomRetry 0}
+:if ([:typeof $pppoeDeadRetry]="nothing") do={:set pppoeDeadRetry 0}
+:if ([:typeof $slayerLastPublicIP]="nothing") do={:set slayerLastPublicIP ""}
+:if ([:typeof $slayerLastRandomMAC]="nothing") do={:set slayerLastRandomMAC ""}
+:if ([:typeof $slayerV2Cooldown]="nothing") do={:set slayerV2Cooldown 0}
+:if ($slayerRunning=true) do={:log info "SLAYER V2: Previous execution running; skip."; :return ""}
 :set slayerRunning true
-# =================================================
-# FUNCTIONS
-# =================================================
 :onerror slayerError in={
-    # -------------------------------------------------
-    # GET PPPoE IP
-    # -------------------------------------------------
-    :local getIP do={
-        :local ppp $1
-        :local ids [/ip address find interface=$ppp]
-        :if ([:len $ids] = 0) do={
-            :return ""
-        }
-        :local ip [/ip address get [:pick $ids 0] address]
-        :local pos [:find $ip "/"]
-        :if ($pos != nil) do={
-            :return [:pick $ip 0 $pos]
-        }
-        :return $ip
-    }
-    # -------------------------------------------------
-    # CHECK PUBLIC IP
-    # -------------------------------------------------
-    :local isPublic do={
-        :local ip $1
-        :if ([:len $ip] = 0) do={
-            :return false
-        }
-        :if ($ip ~ "^10\\.") do={
-            :return false
-        }
-        :if ($ip ~ "^192\\.168\\.") do={
-            :return false
-        }
-        :if ($ip ~ "^172\\.(1[6-9]|2[0-9]|3[0-1])\\.") do={
-            :return false
-        }
-        :if ($ip ~ "^100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\.") do={
-            :return false
-        }
-        :return true
-    }
-    # -------------------------------------------------
-    # RECONNECT PPPoE
-    # -------------------------------------------------
-    :local reconnect do={
-        :local ppp $1
-        :log warning "SLAYER: Reconnect PPPoE..."
-        /interface pppoe-client disable [find name=$ppp]
-        :delay 2s
-        /ip arp remove [find interface=$wanIf]
-        /interface pppoe-client enable [find name=$ppp]
-        :delay 3s
-    }
-    # -------------------------------------------------
-    # RANDOM MAC / RESET DEFAULT
-    # -------------------------------------------------
-    :local macAction do={
-        :global macRotateCount
-        :local iface $1
-        :local ppp $2
-        :local prefix $3
-        :local ids [/interface ethernet find name=$iface]
-        :if ([:len $ids] = 0) do={
-            :log error ("SLAYER: Interface " . $iface . " tidak ditemukan.")
-            :return
-        }
-        # 0,1,2 = random MAC
-        # 3     = reset hardware MAC
-        :if ($macRotateCount < 3) do={
-            :local rnd [:rndstr from="0123456789ABCDEF" length=6]
-            :local a [:pick $rnd 0 2]
-            :local b [:pick $rnd 2 4]
-            :local c [:pick $rnd 4 6]
-            :local newMac ($prefix . ":" . $a . ":" . $b . ":" . $c)
-            :set macRotateCount ($macRotateCount + 1)
-            :log warning ("SLAYER: Random MAC #" . $macRotateCount . " -> " . $newMac)
-            /interface ethernet set [:pick $ids 0] mac-address=$newMac
-        } else={
-            :log warning "SLAYER: 3 random MAC gagal. Reset ke MAC hardware."
-            /interface ethernet reset-mac-address $iface
-            :set macRotateCount 0
-        }
-        # Reconnect menggunakan MAC baru
-        [$reconnect $ppp]
-    }
-    # =================================================
-    # CHECK WAN
-    # =================================================
-    :local wanIds [/interface ethernet find name=$wanIf]
-    :if ([:len $wanIds] = 0) do={
-        :log error ("SLAYER: Interface " . $wanIf . " tidak ditemukan.")
-    } else={
-        :local wanRunning [/interface ethernet get [:pick $wanIds 0] running]
-        :if ($wanRunning = false) do={
-            :log warning ("SLAYER: " . $wanIf . " link DOWN. Skip.")
-        } else={
-            # =================================================
-            # GET IP
-            # =================================================
-            :local currentIP [$getIP $pppoeName]
-            # =================================================
-            # NO IP
-            # =================================================
-            :if ([:len $currentIP] = 0) do={
-                :set pppoeDeadRetry ($pppoeDeadRetry + 1)
-                :log warning ("SLAYER: Tidak ada IP. Retry " . $pppoeDeadRetry . "/3")
-                :if ($pppoeDeadRetry >= 3) do={
-                    :set pppoeDeadRetry 0
-                    :set telkomRetry 0
-                    [$macAction $wanIf $pppoeName $macPrefix]
-                } else={
-                    [$reconnect $pppoeName]
-                }
-            } else={
-                # =================================================
-                # ADA IP
-                # =================================================
-                :set pppoeDeadRetry 0
-                :local public [$isPublic $currentIP]
-                # =================================================
-                # PUBLIC IP
-                # =================================================
-                :if ($public = true) do={
-                    :set telkomRetry 0
-                    :if ($currentIP != $slayerLastPublicIP) do={
-                        :log warning ("SLAYER: Public IP berubah -> " . $currentIP)
-                        /system script run update_ddns
-                        :set slayerLastPublicIP $currentIP
-                    }
-                } else={
-                    # =================================================
-                    # PRIVATE / CGNAT
-                    # =================================================
-                    :set telkomRetry ($telkomRetry + 1)
-                    :log warning ("SLAYER: Private/CGNAT IP -> " . $currentIP . " | Retry " . $telkomRetry . "/3")
-                    :if ($telkomRetry >= 3) do={
-                        :set telkomRetry 0
-                        :set pppoeDeadRetry 0
-                        [$macAction $wanIf $pppoeName $macPrefix]
-                    } else={
-                        [$reconnect $pppoeName]
-                    }
-                }
-            }
-        }
-    }
-} do={
-    :log error ("SLAYER: Runtime error -> " . $slayerError)
+
+:local getIP do={
+ :global slayerV2MonitorIP
+ :set slayerV2MonitorIP ""
+ /interface pppoe-client monitor $1 once do={:global slayerV2MonitorIP; :set slayerV2MonitorIP $"local-address"}
+ :if ([:len $slayerV2MonitorIP]>0) do={:return $slayerV2MonitorIP}
+ :local ids [/ip address find interface=$1]
+ :if ([:len $ids]=0) do={:return ""}
+ :local a [/ip address get [:pick $ids 0] address]
+ :local s [:find $a "/"]
+ :if ($s!=nil) do={:return [:pick $a 0 $s]}
+ :return $a
 }
-# =================================================
-# UNLOCK
-# =================================================
+:local classify do={
+ :local ip $1
+ :if ([:len $ip]=0) do={:return "DEAD"}
+ :if ($ip~"^10\\." || $ip~"^192\\.168\\." || $ip~"^172\\.(1[6-9]|2[0-9]|3[0-1])\\." || $ip~"^100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\." || $ip~"^(0|127|169)\\." || $ip~"^192\\.0\\.0\\." || $ip~"^192\\.0\\.2\\." || $ip~"^192\\.88\\.99\\." || $ip~"^198\\.(18|19)\\." || $ip~"^198\\.51\\.100\\." || $ip~"^203\\.0\\.113\\." || $ip~"^(22[4-9]|23[0-9]|24[0-9]|25[0-5])\\.") do={:return "PRIVATE"}
+ :return "PUBLIC"
+}
+:local reconnect do={
+ :local p $1
+ :local secs $2
+ :local ids [/interface pppoe-client find name=$p]
+ :if ([:len $ids]=0) do={:log error ("SLAYER V2: PPPoE client missing: ".$p); :return "DEAD"}
+ :log warning ("SLAYER V2: Reconnect ".$p."; IP wait=".$secs."s.")
+ /interface pppoe-client disable $ids
+ :local down false
+ :for n from=1 to=10 do={:if (!$down) do={:if ([/interface pppoe-client get [:pick $ids 0] running]=false) do={:set down true} else={:delay 300ms}}}
+ :if (!$down) do={/interface pppoe-client enable $ids; :log error "SLAYER V2: PPPoE busy; reconnect aborted."; :return "BUSY"}
+ /interface pppoe-client enable $ids
+ :for n from=1 to=($secs*2) do={
+  :local ip [$getIP $p]
+  :if ([:len $ip]>0) do={:local st [$classify $ip]; :log warning ("SLAYER V2: Reconnect IP=".$ip." state=".$st); :return $st}
+  :delay 500ms
+ }
+ :log error ("SLAYER V2: No PPPoE IP after ".$secs."s.")
+ :return "DEAD"
+}
+:local rotate do={
+ :global macRotateCount
+ :global slayerLastRandomMAC
+ :local iface $1
+ :local p $2
+ :local secs $3
+ :local e [/interface ethernet find name=$iface]
+ :local ids [/interface pppoe-client find name=$p]
+ :if ([:len $e]=0 || [:len $ids]=0) do={:log error "SLAYER V2: WAN or PPPoE interface missing."; :return "DEAD"}
+ /interface pppoe-client disable $ids
+ :local down false
+ :for n from=1 to=10 do={:if (!$down) do={:if ([/interface pppoe-client get [:pick $ids 0] running]=false) do={:set down true} else={:delay 300ms}}}
+ :if (!$down) do={/interface pppoe-client enable $ids; :log error "SLAYER V2: MAC rotation aborted; PPPoE busy."; :return "BUSY"}
+ :if ($macRotateCount<10) do={
+  :local r [:rndstr from="0123456789ABCDEF" length=10]
+  :local m ("02:".[:pick $r 0 2].":".[:pick $r 2 4].":".[:pick $r 4 6].":".[:pick $r 6 8].":".[:pick $r 8 10])
+  :if ($m=$slayerLastRandomMAC) do={:set r [:rndstr from="0123456789ABCDEF" length=10]; :set m ("02:".[:pick $r 0 2].":".[:pick $r 2 4].":".[:pick $r 4 6].":".[:pick $r 6 8].":".[:pick $r 8 10])}
+  :set macRotateCount ($macRotateCount+1)
+  :set slayerLastRandomMAC $m
+  :log warning ("SLAYER V2: Random LAA MAC #".$macRotateCount."/10 -> ".$m)
+  /interface ethernet set [:pick $e 0] mac-address=$m
+ } else={
+  :log warning "SLAYER V2: 10 random MAC attempts used; restore hardware MAC."
+  /interface ethernet reset-mac-address [:pick $e 0]
+  :set macRotateCount 0
+  :set slayerLastRandomMAC ""
+ }
+ /interface pppoe-client enable $ids
+ :for n from=1 to=($secs*2) do={:local ip [$getIP $p]; :if ([:len $ip]>0) do={:local st [$classify $ip]; :log warning ("SLAYER V2: After MAC rotation IP=".$ip." state=".$st); :return $st}; :delay 500ms}
+ :log error ("SLAYER V2: No IP after MAC rotation (".$secs."s).")
+ :return "DEAD"
+}
+:local updateDDNS do={
+ :global slayerLastPublicIP
+ :local ip $1
+ :if ($ip!=$slayerLastPublicIP) do={:log warning ("SLAYER V2: Public IP changed -> ".$ip."; update DDNS."); /system script run update_ddns; :set slayerLastPublicIP $ip}
+}
+
+:local wan [/interface ethernet find name=$wanIf]
+:if ([:len $wan]=0) do={:log error ("SLAYER V2: WAN interface missing: ".$wanIf)} else={
+ :if ([/interface ethernet get [:pick $wan 0] running]=false) do={:log warning "SLAYER V2: WAN link DOWN; skip."} else={
+  :if ($slayerV2Cooldown>0) do={:set slayerV2Cooldown ($slayerV2Cooldown-1); :log info ("SLAYER V2: Cooldown ticks=".$slayerV2Cooldown)} else={
+   :local ip [$getIP $pppoeName]
+   :local state [$classify $ip]
+   :if ($state="PUBLIC") do={
+    :set telkomRetry 0; :set pppoeDeadRetry 0; [$updateDDNS $ip]
+   } else={
+    :if ($state="PRIVATE") do={
+     :set pppoeDeadRetry 0
+     :set telkomRetry ($telkomRetry+1)
+     :log warning ("SLAYER V2: Private IP ".$ip."; public-IP failures=".$telkomRetry."/3.")
+     :if ($telkomRetry>=3) do={
+      :set telkomRetry 0
+      :log warning "SLAYER V2: Three private-IP cycles; rotate MAC."
+      :local mr [$rotate $wanIf $pppoeName 20]
+      :if ($mr="PUBLIC") do={:set telkomRetry 0; :local nip [$getIP $pppoeName]; [$updateDDNS $nip]} else={:if ($mr="PRIVATE") do={:log warning "SLAYER V2: MAC rotation returned private IP; preserve connection."} else={:set slayerV2Cooldown 2}}
+     } else={
+      :local rr [$reconnect $pppoeName 30]
+      :if ($rr="PUBLIC") do={:set telkomRetry 0; :local nip [$getIP $pppoeName]; [$updateDDNS $nip]} else={:if ($rr="DEAD") do={:set slayerV2Cooldown 1}}
+     }
+    } else={
+     :set pppoeDeadRetry ($pppoeDeadRetry+1)
+     :log warning ("SLAYER V2: No PPPoE IP; no-IP cycles=".$pppoeDeadRetry."/3.")
+     :if ($pppoeDeadRetry>=3) do={
+      :set pppoeDeadRetry 0
+      :log warning "SLAYER V2: Three no-IP cycles; rotate MAC."
+      :local mr [$rotate $wanIf $pppoeName 15]
+      :if (($mr="PUBLIC") || ($mr="PRIVATE")) do={:set pppoeDeadRetry 0; :if ($mr="PUBLIC") do={:set telkomRetry 0; :local nip [$getIP $pppoeName]; [$updateDDNS $nip]} else={:set telkomRetry 1; :log warning "SLAYER V2: MAC rotation restored private IP; preserve connection."}} else={:set slayerV2Cooldown 2}
+     } else={
+      :local rr [$reconnect $pppoeName 5]
+      :if ($rr="PUBLIC") do={:set pppoeDeadRetry 0; :set telkomRetry 0; :local nip [$getIP $pppoeName]; [$updateDDNS $nip]} else={:if ($rr="PRIVATE") do={:set pppoeDeadRetry 0; :set telkomRetry ($telkomRetry+1); :log warning ("SLAYER V2: Recovered private IP; public-IP failures=".$telkomRetry."/3.")} else={:if ($rr="DEAD") do={:set slayerV2Cooldown 1}}}
+     }
+    }
+   }
+  }
+ }
+}
+} do={:log error ("SLAYER V2: Runtime error -> ".$slayerError)}
 :set slayerRunning false
