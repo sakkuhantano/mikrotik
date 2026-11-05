@@ -69,12 +69,12 @@
  :for n from=1 to=10 do={:if (!$down) do={:if ([/interface pppoe-client get [:pick $ids 0] running]=false) do={:set down true} else={:delay 300ms}}}
  :if (!$down) do={/interface pppoe-client enable $ids; :log error "SLAYER V2: MAC rotation aborted; PPPoE busy."; :return "BUSY"}
  :if ($macRotateCount<10) do={
-  :local r [:rndstr from="0123456789ABCDEF" length=10]
-  :local m ("02:".[:pick $r 0 2].":".[:pick $r 2 4].":".[:pick $r 4 6].":".[:pick $r 6 8].":".[:pick $r 8 10])
-  :if ($m=$slayerLastRandomMAC) do={:set r [:rndstr from="0123456789ABCDEF" length=10]; :set m ("02:".[:pick $r 0 2].":".[:pick $r 2 4].":".[:pick $r 4 6].":".[:pick $r 6 8].":".[:pick $r 8 10])}
+  :local r [:rndstr from="0123456789ABCDEF" length=8]
+  :local m ("BC:C0:".[:pick $r 0 2].":".[:pick $r 2 4].":".[:pick $r 4 6].":".[:pick $r 6 8])
+  :if ($m=$slayerLastRandomMAC) do={:set r [:rndstr from="0123456789ABCDEF" length=8]; :set m ("BC:C0:".[:pick $r 0 2].":".[:pick $r 2 4].":".[:pick $r 4 6].":".[:pick $r 6 8])}
   :set macRotateCount ($macRotateCount+1)
   :set slayerLastRandomMAC $m
-  :log warning ("SLAYER V2: Random LAA MAC #".$macRotateCount."/10 -> ".$m)
+  :log warning ("SLAYER V2: Random BC:C0-prefix MAC #".$macRotateCount."/10 -> ".$m)
   /interface ethernet set [:pick $e 0] mac-address=$m
  } else={
   :log warning "SLAYER V2: 10 random MAC attempts used; restore hardware MAC."
