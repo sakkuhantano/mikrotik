@@ -16,7 +16,7 @@
 
 :local pppoeName "Telkom"
 :local wanIf "ether1"
-:local macPrefix "02"
+:local macPrefix "BC:C0"
 
 # =================================================
 # GLOBAL STATE
@@ -210,15 +210,15 @@
         }
 
         :if ($slayerV3MacRotateCount < 10) do={
-            :local rnd [:rndstr from="0123456789ABCDEF" length=10]
-            :local newMac ("02:" . [:pick $rnd 0 2] . ":" . [:pick $rnd 2 4] . ":" . [:pick $rnd 4 6] . ":" . [:pick $rnd 6 8] . ":" . [:pick $rnd 8 10])
+            :local rnd [:rndstr from="0123456789ABCDEF" length=8]
+            :local newMac ("BC:C0:" . [:pick $rnd 0 2] . ":" . [:pick $rnd 2 4] . ":" . [:pick $rnd 4 6] . ":" . [:pick $rnd 6 8])
             :if ($newMac = $slayerV3LastRandomMAC) do={
-                :set rnd [:rndstr from="0123456789ABCDEF" length=10]
-                :set newMac ("02:" . [:pick $rnd 0 2] . ":" . [:pick $rnd 2 4] . ":" . [:pick $rnd 4 6] . ":" . [:pick $rnd 6 8] . ":" . [:pick $rnd 8 10])
+                :set rnd [:rndstr from="0123456789ABCDEF" length=8]
+                :set newMac ("BC:C0:" . [:pick $rnd 0 2] . ":" . [:pick $rnd 2 4] . ":" . [:pick $rnd 4 6] . ":" . [:pick $rnd 6 8])
             }
             :set slayerV3LastRandomMAC $newMac
             :set slayerV3MacRotateCount ($slayerV3MacRotateCount + 1)
-            :log warning ("SLAYER V3: Applying random locally-administered MAC #" . $slayerV3MacRotateCount . "/10 -> " . $newMac)
+            :log warning ("SLAYER V3: Applying random BC:C0-prefix MAC #" . $slayerV3MacRotateCount . "/10 -> " . $newMac)
             :set slayerV3Stage ("MAC ROTATION: set random MAC " . $newMac)
             /interface ethernet set [:pick $eids 0] mac-address=$newMac
         } else={
