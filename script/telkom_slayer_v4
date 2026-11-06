@@ -6,8 +6,9 @@
 # - Public IP: keep the current PPPoE session.
 # - Private IP + internet reachable: KEEP the current session.
 # - Private IP is NOT a reason to reconnect.
-# - No periodic reconnect and NO automatic MAC rotation.
-# - If PPPoE has no IP: one controlled reconnect, rate-limited.
+# - No periodic reconnect and NO automatic MAC rotation while a usable IP exists.
+# - If PPPoE remains without an IP for 3 consecutive recovery attempts, MAC rotation is allowed once to recover a frozen PPPoE session.
+# - If PPPoE has no IP: controlled reconnects are rate-limited; after 3 consecutive no-IP failures, MAC rotation is allowed.
 # - If internet is unreachable: one controlled reconnect, rate-limited.
 # - A private IP may remain for hours/days; stability is preferred.
 # - External reachability: either 1.1.1.1 OR 8.8.8.8 replying is sufficient.
@@ -16,12 +17,15 @@
 
 :local pppoeName "Telkom"
 :local wanIf "ether1"
+:local macPrefix "BC:C0"
 
 # =================================================
 # GLOBAL STATE
 # =================================================
 :global slayerV4Running
 :global slayerV4NoIPFailures
+:global slayerV4MacRotateCount
+:global slayerV4LastRandomMAC
 :global slayerV4OutageCooldown
 :global slayerV4LastLoggedIP
 :global slayerV4LastPublicIP
@@ -29,6 +33,8 @@
 
 :if ([:typeof $slayerV4Running] = "nothing") do={ :set slayerV4Running false }
 :if ([:typeof $slayerV4NoIPFailures] = "nothing") do={ :set slayerV4NoIPFailures 0 }
+:if ([:typeof $slayerV4MacRotateCount] = "nothing") do={ :set slayerV4MacRotateCount 0 }
+:if ([:typeof $slayerV4LastRandomMAC] = "nothing") do={ :set slayerV4LastRandomMAC "" }
 :if ([:typeof $slayerV4OutageCooldown] = "nothing") do={ :set slayerV4OutageCooldown 0 }
 :if ([:typeof $slayerV4LastLoggedIP] = "nothing") do={ :set slayerV4LastLoggedIP "" }
 :if ([:typeof $slayerV4LastPublicIP] = "nothing") do={ :set slayerV4LastPublicIP "" }
@@ -174,6 +180,104 @@
         :return "DEAD"
     }
 
+    # -------------------------------------------------
+    # ONE MAC ROTATION - ONLY AFTER 3 CONSECUTIVE NO-IP FAILURES
+    # -------------------------------------------------
+    :local rotateMAC do={
+        :global slayerV4Stage
+        :global slayerV4MacRotateCount
+        :global slayerV4LastRandomMAC
+        :local iface $1
+        :local ppp $2
+        :local prefix $3
+        :local waitSeconds $4
+        :local waitChecks ($waitSeconds * 2)
+
+        :local eids [/interface ethernet find name=$iface]
+        :if ([:len $eids] = 0) do={
+            :log error ("SLAYER V4: Ethernet interface not found: " . $iface)
+            :return "DEAD"
+        }
+        :local pids [/interface pppoe-client find name=$ppp]
+        :if ([:len $pids] = 0) do={
+            :log error ("SLAYER V4: PPPoE client not found: " . $ppp)
+            :return "DEAD"
+        }
+
+        :set slayerV4Stage ("MAC ROTATION: disable PPPoE " . $ppp)
+        /interface pppoe-client disable $pids
+
+        :local isDown false
+        :for n from=1 to=10 do={
+            :if ($isDown = false) do={
+                :if ([/interface pppoe-client get [:pick $pids 0] running] = false) do={
+                    :set isDown true
+                } else={
+                    :delay 300ms
+                }
+            }
+        }
+
+        :if ($isDown = false) do={
+            :log error "SLAYER V4: Cannot rotate MAC; PPPoE did not stop cleanly. Restoring enabled state."
+            /interface pppoe-client enable $pids
+            :return "BUSY"
+        }
+
+        :if ($slayerV4MacRotateCount < 10) do={
+            :local rnd [:rndstr from="0123456789ABCDEF" length=8]
+            :local newMac ($prefix . ":" . [:pick $rnd 0 2] . ":" . [:pick $rnd 2 4] . ":" . [:pick $rnd 4 6] . ":" . [:pick $rnd 6 8])
+            :if ($newMac = $slayerV4LastRandomMAC) do={
+                :set rnd [:rndstr from="0123456789ABCDEF" length=8]
+                :set newMac ($prefix . ":" . [:pick $rnd 0 2] . ":" . [:pick $rnd 2 4] . ":" . [:pick $rnd 4 6] . ":" . [:pick $rnd 6 8])
+            }
+            :set slayerV4LastRandomMAC $newMac
+            :set slayerV4MacRotateCount ($slayerV4MacRotateCount + 1)
+            :log warning ("SLAYER V4: 3 consecutive no-IP failures reached; applying random " . $prefix . "-prefix MAC #" . $slayerV4MacRotateCount . "/10 -> " . $newMac)
+            :set slayerV4Stage ("MAC ROTATION: set random MAC " . $newMac)
+            /interface ethernet set [:pick $eids 0] mac-address=$newMac
+        } else={
+            :log warning "SLAYER V4: Ten random MAC attempts used; restoring factory MAC before continuing."
+            :set slayerV4Stage ("MAC ROTATION: reset hardware MAC on " . $iface)
+            /interface ethernet reset-mac-address [:pick $eids 0]
+            :set slayerV4MacRotateCount 0
+            :set slayerV4LastRandomMAC ""
+        }
+
+        :set slayerV4Stage ("MAC ROTATION: enable PPPoE " . $ppp)
+        /interface pppoe-client enable $pids
+
+        :set slayerV4Stage ("MAC ROTATION: wait up to " . $waitSeconds . " seconds for IP " . $ppp)
+        :for n from=1 to=$waitChecks do={
+            :local ip [$getIP $ppp]
+            :if ([:len $ip] > 0) do={
+                :local state [$classifyIP $ip]
+                :log warning ("SLAYER V4: After MAC rotation IP=" . $ip . " state=" . $state)
+                :return $state
+            }
+            :delay 500ms
+        }
+
+        # PPPoE can become connected before local-address is populated.
+        :set slayerV4Stage "MAC ROTATION: late IP grace check"
+        :local lateInternetOK [$probeInternet]
+        :if ($lateInternetOK = true) do={
+            :log warning "SLAYER V4: MAC rotation wait expired but internet is reachable; giving PPPoE IP a 10-second late-assignment grace window."
+            :for n from=1 to=20 do={
+                :local ip [$getIP $ppp]
+                :if ([:len $ip] > 0) do={
+                    :local state [$classifyIP $ip]
+                    :log warning ("SLAYER V4: MAC rotation late-grace IP=" . $ip . " state=" . $state)
+                    :return $state
+                }
+                :delay 500ms
+            }
+        }
+
+        :log error ("SLAYER V4: No PPPoE IP after MAC rotation (" . $waitSeconds . " seconds + late grace).")
+        :return "DEAD"
+    }
+
     # =================================================
     # MAIN
     # =================================================
@@ -297,9 +401,34 @@
                         :set slayerV4OutageCooldown 2
 
                         :if ($slayerV4NoIPFailures >= 3) do={
-                            :log error "SLAYER V4: Three no-IP recovery attempts failed. No MAC rotation will be performed; preserving MAC and waiting for the next recovery window."
+                            :log warning "SLAYER V4: Three consecutive no-IP recovery attempts failed; MAC rotation is now permitted for PPPoE freeze recovery."
                             :set slayerV4NoIPFailures 0
-                            :set slayerV4OutageCooldown 5
+
+                            :local macResult [$rotateMAC $wanIf $pppoeName $macPrefix 30]
+
+                            :if (($macResult = "PUBLIC") || ($macResult = "PRIVATE")) do={
+                                :set slayerV4NoIPFailures 0
+                                :set slayerV4OutageCooldown 2
+                                :local newIP [$getIP $pppoeName]
+                                :set slayerV4LastLoggedIP $newIP
+
+                                :if ($macResult = "PUBLIC") do={
+                                    :if ($newIP != $slayerV4LastPublicIP) do={
+                                        :set slayerV4Stage ("DDNS: update after no-IP MAC rotation; public IP " . $newIP)
+                                        /system script run update_ddns
+                                        :set slayerV4LastPublicIP $newIP
+                                    }
+                                } else={
+                                    :log warning ("SLAYER V4: MAC rotation recovered PPPoE with private IP=" . $newIP . "; keeping the connection stable.")
+                                }
+                            } else={
+                                :set slayerV4OutageCooldown 5
+                                :if ($macResult = "DEAD") do={
+                                    :log error "SLAYER V4: MAC rotation did not obtain an IP; keeping the new MAC and waiting 5 minutes before another recovery window."
+                                } else={
+                                    :log error "SLAYER V4: MAC rotation could not be completed cleanly; recovery cooldown 5 minutes."
+                                }
+                            }
                         }
                     }
                 }
