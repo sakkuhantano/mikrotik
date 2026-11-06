@@ -1,0 +1,318 @@
+# =================================================
+# TELKOM SLAYER V4 - STABILITY FIRST
+# RouterOS 7.x | Scheduler: every 1 minute
+#
+# Policy:
+# - Public IP: keep the current PPPoE session.
+# - Private IP + internet reachable: KEEP the current session.
+# - Private IP is NOT a reason to reconnect.
+# - No periodic reconnect and NO automatic MAC rotation.
+# - If PPPoE has no IP: one controlled reconnect, rate-limited.
+# - If internet is unreachable: one controlled reconnect, rate-limited.
+# - A private IP may remain for hours/days; stability is preferred.
+# - External reachability: either 1.1.1.1 OR 8.8.8.8 replying is sufficient.
+# - One execution at a time; detailed stage logging for diagnosis.
+# =================================================
+
+:local pppoeName "Telkom"
+:local wanIf "ether1"
+
+# =================================================
+# GLOBAL STATE
+# =================================================
+:global slayerV4Running
+:global slayerV4NoIPFailures
+:global slayerV4OutageCooldown
+:global slayerV4LastLoggedIP
+:global slayerV4LastPublicIP
+:global slayerV4Stage
+
+:if ([:typeof $slayerV4Running] = "nothing") do={ :set slayerV4Running false }
+:if ([:typeof $slayerV4NoIPFailures] = "nothing") do={ :set slayerV4NoIPFailures 0 }
+:if ([:typeof $slayerV4OutageCooldown] = "nothing") do={ :set slayerV4OutageCooldown 0 }
+:if ([:typeof $slayerV4LastLoggedIP] = "nothing") do={ :set slayerV4LastLoggedIP "" }
+:if ([:typeof $slayerV4LastPublicIP] = "nothing") do={ :set slayerV4LastPublicIP "" }
+:if ([:typeof $slayerV4Stage] = "nothing") do={ :set slayerV4Stage "INITIALIZATION" }
+
+# =================================================
+# LOCK
+# =================================================
+:if ($slayerV4Running = true) do={
+    :log info "SLAYER V4: Previous execution is still running; scheduler tick skipped."
+    :return ""
+}
+:set slayerV4Running true
+:set slayerV4Stage "START / LOCK ACQUIRED"
+
+:onerror slayerV4Error in={
+
+    # -------------------------------------------------
+    # GET PPPoE IP
+    # -------------------------------------------------
+    :local getIP do={
+        :global slayerV4Stage
+        :global slayerV4MonitorIP
+        :local ppp $1
+
+        :set slayerV4Stage "READ PPPoE CLIENT MONITOR LOCAL-ADDRESS"
+        :set slayerV4MonitorIP ""
+
+        /interface pppoe-client monitor $ppp once do={
+            :global slayerV4MonitorIP
+            :set slayerV4MonitorIP $"local-address"
+        }
+
+        :if ([:len $slayerV4MonitorIP] > 0) do={
+            :return $slayerV4MonitorIP
+        }
+
+        # Fallback for RouterOS builds where monitor has not populated local-address yet.
+        :set slayerV4Stage "READ PPPoE IP ADDRESS FALLBACK"
+        :local ids [/ip address find interface=$ppp]
+        :if ([:len $ids] = 0) do={ :return "" }
+
+        :local addr [/ip address get [:pick $ids 0] address]
+        :local slash [:find $addr "/"]
+        :if ($slash != nil) do={ :return [:pick $addr 0 $slash] }
+        :return $addr
+    }
+
+    # -------------------------------------------------
+    # CLASSIFY IPv4
+    # -------------------------------------------------
+    :local classifyIP do={
+        :local ip $1
+
+        :if ([:len $ip] = 0) do={ :return "DEAD" }
+        :if ($ip ~ "^10\\.") do={ :return "PRIVATE" }
+        :if ($ip ~ "^192\\.168\\.") do={ :return "PRIVATE" }
+        :if ($ip ~ "^172\\.(1[6-9]|2[0-9]|3[0-1])\\.") do={ :return "PRIVATE" }
+        :if ($ip ~ "^100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\.") do={ :return "PRIVATE" }
+        :if ($ip ~ "^(0|127|169)\\.") do={ :return "PRIVATE" }
+        :if ($ip ~ "^192\\.0\\.0\\.") do={ :return "PRIVATE" }
+        :if ($ip ~ "^192\\.0\\.2\\.") do={ :return "PRIVATE" }
+        :if ($ip ~ "^192\\.88\\.99\\.") do={ :return "PRIVATE" }
+        :if ($ip ~ "^198\\.(18|19)\\.") do={ :return "PRIVATE" }
+        :if ($ip ~ "^198\\.51\\.100\\.") do={ :return "PRIVATE" }
+        :if ($ip ~ "^203\\.0\\.113\\.") do={ :return "PRIVATE" }
+        :if ($ip ~ "^(22[4-9]|23[0-9]|24[0-9]|25[0-5])\\.") do={ :return "PRIVATE" }
+
+        :return "PUBLIC"
+    }
+
+    # -------------------------------------------------
+    # TEST INTERNET REACHABILITY
+    # -------------------------------------------------
+    :local probeInternet do={
+        :global slayerV4Stage
+
+        :set slayerV4Stage "INTERNET PROBE: ping 1.1.1.1"
+        :local p1 [/ping address=1.1.1.1 count=2]
+
+        :set slayerV4Stage "INTERNET PROBE: ping 8.8.8.8"
+        :local p2 [/ping address=8.8.8.8 count=2]
+
+        :if (($p1 > 0) || ($p2 > 0)) do={ :return true }
+        :return false
+    }
+
+    # -------------------------------------------------
+    # ONE CONTROLLED PPPoE RECONNECT
+    # -------------------------------------------------
+    :local reconnect do={
+        :global slayerV4Stage
+        :local ppp $1
+        :local waitSeconds $2
+        :local waitChecks ($waitSeconds * 2)
+
+        :log warning ("SLAYER V4: Starting one controlled reconnect for " . $ppp . "; IP wait=" . $waitSeconds . " seconds.")
+
+        :local pids [/interface pppoe-client find name=$ppp]
+        :if ([:len $pids] = 0) do={
+            :log error ("SLAYER V4: PPPoE client not found: " . $ppp)
+            :return "DEAD"
+        }
+
+        :set slayerV4Stage ("RECONNECT: disable PPPoE " . $ppp)
+        /interface pppoe-client disable $pids
+
+        :local isDown false
+        :for n from=1 to=10 do={
+            :if ($isDown = false) do={
+                :if ([/interface pppoe-client get [:pick $pids 0] running] = false) do={
+                    :set isDown true
+                } else={
+                    :delay 300ms
+                }
+            }
+        }
+
+        :if ($isDown = false) do={
+            :log error "SLAYER V4: PPPoE did not stop within 3 seconds; restoring enable state."
+            :set slayerV4Stage ("RECONNECT: re-enable after BUSY " . $ppp)
+            /interface pppoe-client enable $pids
+            :return "BUSY"
+        }
+
+        :set slayerV4Stage ("RECONNECT: enable PPPoE " . $ppp)
+        /interface pppoe-client enable $pids
+
+        :set slayerV4Stage ("RECONNECT: wait up to " . $waitSeconds . " seconds for IP " . $ppp)
+        :for n from=1 to=$waitChecks do={
+            :local ip [$getIP $ppp]
+
+            :if ([:len $ip] > 0) do={
+                :local state [$classifyIP $ip]
+                :log warning ("SLAYER V4: Reconnect result IP=" . $ip . " state=" . $state)
+                :return $state
+            }
+
+            :delay 500ms
+        }
+
+        :log error ("SLAYER V4: No PPPoE IP after " . $waitSeconds . " seconds.")
+        :return "DEAD"
+    }
+
+    # =================================================
+    # MAIN
+    # =================================================
+    :set slayerV4Stage "MAIN: find WAN Ethernet interface"
+    :local wanIds [/interface ethernet find name=$wanIf]
+
+    :if ([:len $wanIds] = 0) do={
+        :log error ("SLAYER V4: WAN interface not found: " . $wanIf)
+    } else={
+        :local wanRunning [/interface ethernet get [:pick $wanIds 0] running]
+
+        :if ($wanRunning = false) do={
+            :set slayerV4NoIPFailures 0
+            :set slayerV4OutageCooldown 0
+        } else={
+            :local currentIP [$getIP $pppoeName]
+            :local state [$classifyIP $currentIP]
+
+            # -------------------------------------------------
+            # PUBLIC OR PRIVATE WITH A WORKING SESSION
+            # -------------------------------------------------
+            :if (($state = "PUBLIC") || ($state = "PRIVATE")) do={
+
+                :set slayerV4NoIPFailures 0
+
+                :set slayerV4Stage "MAIN: verify internet reachability"
+                :local internetOK [$probeInternet]
+
+                :if ($internetOK = true) do={
+
+                    # IMPORTANT:
+                    # A private IP is NOT a reconnect trigger in V4.
+                    # Keep the current PPPoE session untouched.
+                    :if ($currentIP != $slayerV4LastLoggedIP) do={
+                        :if ($state = "PUBLIC") do={
+                            :log info ("SLAYER V4: Internet detected; PPPoE IP=" . $currentIP . " (PUBLIC). Keeping session.")
+                        } else={
+                            :log info ("SLAYER V4: Internet detected; PPPoE IP=" . $currentIP . " (PRIVATE). Keeping session; no reconnect.")
+                        }
+                        :set slayerV4LastLoggedIP $currentIP
+                    }
+
+                    :set slayerV4OutageCooldown 0
+
+                    # DDNS is updated only for a public IP.
+                    :if ($state = "PUBLIC") do={
+                        :if ($currentIP != $slayerV4LastPublicIP) do={
+                            :log warning ("SLAYER V4: Public IP changed -> " . $currentIP)
+                            :set slayerV4Stage ("DDNS: update for public IP " . $currentIP)
+                            /system script run update_ddns
+                            :set slayerV4LastPublicIP $currentIP
+                        }
+                    }
+
+                } else={
+
+                    # Internet is down even though PPPoE has an IP.
+                    # This is a real recovery condition, unlike PRIVATE IP by itself.
+                    :if ($slayerV4OutageCooldown > 0) do={
+                        :set slayerV4OutageCooldown ($slayerV4OutageCooldown - 1)
+                        :log warning ("SLAYER V4: Internet unreachable; recovery cooldown active (" . $slayerV4OutageCooldown . " minute(s) remaining).")
+                    } else={
+                        :log warning ("SLAYER V4: PPPoE has IP " . $currentIP . " but internet is unreachable; one recovery reconnect.")
+
+                        :local result [$reconnect $pppoeName 30]
+
+                        :if (($result = "PUBLIC") || ($result = "PRIVATE")) do={
+                            :set slayerV4NoIPFailures 0
+                            :set slayerV4OutageCooldown 2
+
+                            :local newIP [$getIP $pppoeName]
+                            :if ($newIP != $slayerV4LastLoggedIP) do={
+                                :log warning ("SLAYER V4: Recovery reconnect restored PPPoE IP=" . $newIP . " state=" . $result)
+                                :set slayerV4LastLoggedIP $newIP
+                            }
+
+                            :if ($result = "PUBLIC") do={
+                                :if ($newIP != $slayerV4LastPublicIP) do={
+                                    :set slayerV4Stage ("DDNS: update after outage recovery; public IP " . $newIP)
+                                    /system script run update_ddns
+                                    :set slayerV4LastPublicIP $newIP
+                                }
+                            }
+                        } else={
+                            :set slayerV4OutageCooldown 2
+                            :log error "SLAYER V4: Recovery reconnect did not restore a usable PPPoE IP; retry is rate-limited."
+                        }
+                    }
+                }
+
+            } else={
+
+                # -------------------------------------------------
+                # NO PPPoE IP
+                # -------------------------------------------------
+                :if ($slayerV4OutageCooldown > 0) do={
+                    :set slayerV4OutageCooldown ($slayerV4OutageCooldown - 1)
+                    :log warning ("SLAYER V4: PPPoE has no IP; recovery cooldown active (" . $slayerV4OutageCooldown . " minute(s) remaining).")
+                } else={
+                    :set slayerV4NoIPFailures ($slayerV4NoIPFailures + 1)
+
+                    :log warning ("SLAYER V4: PPPoE has no IP; controlled reconnect attempt. No-IP cycles=" . $slayerV4NoIPFailures . "/3.")
+
+                    :local result [$reconnect $pppoeName 30]
+
+                    :if (($result = "PUBLIC") || ($result = "PRIVATE")) do={
+                        :set slayerV4NoIPFailures 0
+                        :set slayerV4OutageCooldown 2
+
+                        :local newIP [$getIP $pppoeName]
+                        :set slayerV4LastLoggedIP $newIP
+
+                        :if ($result = "PUBLIC") do={
+                            :if ($newIP != $slayerV4LastPublicIP) do={
+                                :set slayerV4Stage ("DDNS: update after no-IP recovery; public IP " . $newIP)
+                                /system script run update_ddns
+                                :set slayerV4LastPublicIP $newIP
+                            }
+                        }
+                    } else={
+                        :set slayerV4OutageCooldown 2
+
+                        :if ($slayerV4NoIPFailures >= 3) do={
+                            :log error "SLAYER V4: Three no-IP recovery attempts failed. No MAC rotation will be performed; preserving MAC and waiting for the next recovery window."
+                            :set slayerV4NoIPFailures 0
+                            :set slayerV4OutageCooldown 5
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+} do={
+    :log error ("SLAYER V4: Runtime error at stage [" . $slayerV4Stage . "] -> " . $slayerV4Error)
+}
+
+# =================================================
+# UNLOCK
+# =================================================
+:set slayerV4Stage "UNLOCK"
+:set slayerV4Running false
