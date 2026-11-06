@@ -381,7 +381,7 @@
 
                     :log warning ("SLAYER V4: PPPoE has no IP; controlled reconnect attempt. No-IP cycles=" . $slayerV4NoIPFailures . "/3.")
 
-                    :local result [$reconnect $pppoeName 30]
+                    :local result [$reconnect $pppoeName 15]
 
                     :if (($result = "PUBLIC") || ($result = "PRIVATE")) do={
                         :set slayerV4NoIPFailures 0
@@ -398,13 +398,14 @@
                             }
                         }
                     } else={
-                        :set slayerV4OutageCooldown 2
+                        # No-IP retries follow the next 1-minute scheduler tick; do not add a 2-minute cooldown.
+                        :set slayerV4OutageCooldown 0
 
                         :if ($slayerV4NoIPFailures >= 3) do={
                             :log warning "SLAYER V4: Three consecutive no-IP recovery attempts failed; MAC rotation is now permitted for PPPoE freeze recovery."
                             :set slayerV4NoIPFailures 0
 
-                            :local macResult [$rotateMAC $wanIf $pppoeName $macPrefix 30]
+                            :local macResult [$rotateMAC $wanIf $pppoeName $macPrefix 20]
 
                             :if (($macResult = "PUBLIC") || ($macResult = "PRIVATE")) do={
                                 :set slayerV4NoIPFailures 0
